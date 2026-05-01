@@ -30,7 +30,12 @@ adb shell su -c id </dev/null 2>/dev/null | grep -q "uid=0" \
 echo "Device is rooted, continuing..."
 
 echo "Reading current IMEIs from device..."
-adb exec-out su -c "cat $IMEI_PATH" > "$BACKUP" || die "Cannot read $IMEI_PATH from device"
+PULL_STAGE=/sdcard/LD0B_001_pull
+adb shell su -c "cp $IMEI_PATH $PULL_STAGE && chmod 644 $PULL_STAGE" </dev/null \
+    || die "Cannot stage $IMEI_PATH at $PULL_STAGE"
+adb pull "$PULL_STAGE" "$BACKUP" >/dev/null 2>&1 \
+    || die "adb pull of $PULL_STAGE failed"
+adb shell su -c "rm $PULL_STAGE" </dev/null >/dev/null 2>&1
 
 file_size=$(wc -c < "$BACKUP")
 [ "$file_size" -eq 384 ] || die "LD0B_001 is $file_size bytes (expected 384) - pull may have corrupted the file"

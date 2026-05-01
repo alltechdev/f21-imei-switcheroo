@@ -99,7 +99,7 @@ pt = nvram_ecb_decrypt(ld0b_data[off:off + IMEI_BLOCK_SIZE])
 return bcd_to_imei(pt[:IMEI_BCD_SIZE])
 ```
 
-Decrypt the requested IMEI block (`[0x40:0x60]` for slot 1, `[0x60:0x80]` for slot 2), decode the first 8 plaintext bytes as BCD. The other 24 bytes (filler / checksum / padding) are ignored on read. Returns `None` on an unpopulated slot — the caller (`_print_both_imeis` or `live_patch.sh`) renders that as `(empty)`.
+Decrypt the requested IMEI block (`[0x40:0x60]` for slot 1, `[0x60:0x80]` for slot 2), decode the first 8 plaintext bytes as BCD. The other 24 bytes (filler / checksum / padding) are ignored on read. Returns `None` on an unpopulated slot — `_print_both_imeis` is what turns that into the `(empty)` string in the printed output, which `live_patch.sh` then searches for to detect single-vs-dual-SIM.
 
 ### `patch_imei(ld0b_data, imei, slot=1)`
 
@@ -159,11 +159,14 @@ The verify-after-write step is the project's primary self-check: every `write` r
 
 ## Partition-image mode
 
-End-to-end recipe when you have a full nvdata partition dump (live `dd` from a rooted device, or extracted from a stock ROM image):
+End-to-end recipe when you have a full nvdata partition dump (live dump from a rooted device, or extracted from a stock ROM image):
 
 ```bash
-# Dump
-adb exec-out su -c "dd if=/dev/block/by-name/nvdata bs=1M 2>/dev/null" > nvdata.img
+# Dump (binary-safe across all verified Android versions: cp via su to /sdcard,
+# then adb pull which uses adb's SYNC protocol)
+adb shell su -c "dd if=/dev/block/by-name/nvdata of=/sdcard/nvdata.img bs=1M && chmod 644 /sdcard/nvdata.img"
+adb pull /sdcard/nvdata.img
+adb shell su -c "rm /sdcard/nvdata.img"
 
 # Patch
 python3 imei_tool.py write nvdata.img 350859600862948 -o nvdata_patched.img
@@ -174,4 +177,6 @@ fastboot flash nvdata nvdata_patched.img
 fastboot reboot
 ```
 
-`_patch_all_copies` patches every header-matching `LD0B_001` copy in the image (live + ext4 journal/COW leftovers) in place — each copy's requested slot becomes the new IMEI while its other slot is preserved per-copy. Distinct copies whose 0x40-byte header differs (e.g. F25's factory backup) are intentionally skipped. End-to-end verified on the F21 Pro (slot 1) via `fastboot flash` and on the TIQ M5 (both slots) via mtkclient flash + boot.
+A simpler `adb exec-out su -c "dd if=/dev/block/by-name/nvdata bs=1M" > nvdata.img` works on F21 Pro / Android 11 but will produce a corrupted image on devices where the `su` stdio path injects CRLF translation (observed on TIQ M5 / Android 13 + Magisk — see [`live_patch.sh`'s pull section](live_patch.md#pull-current-imei) for the same issue's resolution). The `cp via su /sdcard + adb pull` form sidesteps it.
+
+`_patch_all_copies` patches every header-matching `LD0B_001` copy in the image (live + ext4 journal/COW leftovers) in place — each copy's requested slot becomes the new IMEI while its other slot is preserved per-copy. Distinct copies whose 0x40-byte header differs (e.g. F25's factory backup) are intentionally skipped. End-to-end verified on the F21 Pro (slot 1) via `fastboot flash` and on the TIQ M5 (both slots) via mtkclient flash + boot. Both verifications used the binary-safe `cp via su + adb pull` dump form for the *initial* device → host transfer.

@@ -1,6 +1,6 @@
 # `live_patch.sh` — reference
 
-Host-side bash that drives a live, rooted MTK device through ADB: pulls the encrypted IMEI file, hands it to `imei_tool.py` to rewrite, pushes it back through `su`, offers to reboot. Short and linear; the binary-format and crypto knowledge lives in `imei_tool.py`, this script is plumbing. Live-tested on F21 Pro; per-device verification status lives in the top-level [README](../README.md#verification-status).
+Host-side bash that drives a live, rooted MTK device through ADB: pulls the encrypted IMEI file, hands it to `imei_tool.py` to rewrite, pushes it back through `su`, offers to reboot. Short and linear; the binary-format and crypto knowledge lives in `imei_tool.py`, this script is plumbing. Live-tested on F21 Pro and TIQ M5; per-device verification status lives in the top-level [README](../README.md#verification-status).
 
 ## Header
 
@@ -77,16 +77,22 @@ adb shell su -c id </dev/null 2>/dev/null | grep -q "uid=0" \
 echo "Device is rooted, continuing..."
 ```
 
-Confirms an ADB device in the `device` state (not `unauthorized` / `recovery` / `offline`) and that `su -c id` returns `uid=0`. Without the second check, a non-rooted phone would reach the `cat $IMEI_PATH` and fail with a less-specific cat error instead of the explicit "must be rooted" message. The chatty success line is intentional — confirms the precheck happened so a later silent failure isn't misread.
+Confirms an ADB device in the `device` state (not `unauthorized` / `recovery` / `offline`) and that `su -c id` returns `uid=0`. Without the second check, a non-rooted phone would reach the pull step and fail with a less-specific error instead of the explicit "must be rooted" message. The chatty success line is intentional — confirms the precheck happened so a later silent failure isn't misread.
 
 ## Pull current IMEI
 
 ```bash
-adb exec-out su -c "cat $IMEI_PATH" > "$BACKUP" \
-    || die "Cannot read $IMEI_PATH from device"
+PULL_STAGE=/sdcard/LD0B_001_pull
+adb shell su -c "cp $IMEI_PATH $PULL_STAGE && chmod 644 $PULL_STAGE" </dev/null \
+    || die "Cannot stage $IMEI_PATH at $PULL_STAGE"
+adb pull "$PULL_STAGE" "$BACKUP" >/dev/null 2>&1 \
+    || die "adb pull of $PULL_STAGE failed"
+adb shell su -c "rm $PULL_STAGE" </dev/null >/dev/null 2>&1
 ```
 
-`adb exec-out` (not `adb shell`) is critical for binary transfers. `adb shell` allocates a PTY and applies CRLF translations that destroy binary blobs (any `\n` in the encrypted block becomes `\r\n`). `adb exec-out` pipes raw bytes. Stderr is *not* suppressed — if `cat` fails (e.g. wrong path on a non-F21 device), its specific error is shown above the script's own die message.
+The on-device `LD0B_001` is `system:radio`, mode `660`, so the `shell` ADB user can't read it directly. The script uses `su` to copy it to `/sdcard/LD0B_001_pull`, `chmod`s it to 644 so the shell user *can* read it, then `adb pull`s it to the host. `adb pull` uses adb's SYNC protocol — block-based, binary-safe by construction — so the 384-byte payload is preserved exactly.
+
+A simpler-looking `adb exec-out su -c "cat $IMEI_PATH" > "$BACKUP"` does work on some devices (verified historically on F21 Pro / Android 11) but on the TIQ M5 (Android 13 + Magisk) it returned 387 bytes — `\r` was injected before every `\n` in the binary stream. The cp + adb pull path sidesteps the issue by routing the binary content through the filesystem and adb's SYNC channel rather than through any `su` stdio path; verified binary-safe on F21 Pro and TIQ M5 in this configuration. See [`reverse_engineering.md` § Hardware validation (TIQ M5)](reverse_engineering.md#hardware-validation-tiq-m5-dual-sim) for the byte-level evidence.
 
 ```bash
 file_size=$(wc -c < "$BACKUP")
@@ -157,7 +163,8 @@ The IMEI is now in NVRAM, but the modem stack has the old value cached. Only a r
 |---|---|---|
 | `Error: No ADB device connected` | Phone unplugged, USB debugging off, or `adb` not in `PATH`. | Plug in, enable USB debugging, accept the host fingerprint. |
 | `Error: su -c failed: …` | Root prompt denied or phone isn't rooted. | Open Magisk → Superuser, allow root for the `shell` user. |
-| `Error: Cannot read <path> from device` | The path is wrong or unreadable. The `cat` error above the die line shows specifically why. | Verify with `adb shell su -c "ls -la $IMEI_PATH"`. |
+| `Error: Cannot stage <path> at /sdcard/LD0B_001_pull` | The `cp` via `su` to `/sdcard` failed — usually wrong on-device path or a Magisk/SELinux config that blocks the cp. The `cp`/`chmod` error above the die line shows specifically why. | Verify with `adb shell su -c "ls -la $IMEI_PATH"`. |
+| `Error: adb pull of /sdcard/LD0B_001_pull failed` | The cp succeeded but `/sdcard` isn't readable to the `shell` ADB user (unusual; can happen on heavily customized firmwares). | Try the pull manually: `adb pull /sdcard/LD0B_001_pull`. |
 | `Error: LD0B_001 is N bytes (expected 384)` | Pull corrupted or wrong path. | Confirm path and re-run. |
 | `Error: Read failed (imei_tool.py error above)` | `imei_tool.py read` rejected the pulled file (wrong size, bad LDI magic, missing dependency, …). The exact reason is printed above by `imei_tool.py`. | Read the line above; common cases: pull was truncated, or `pycryptodome` not installed. |
 | `Error: IMEI must be exactly 15 digits` | Typo at the prompt. | Re-run. |
@@ -168,8 +175,8 @@ The IMEI is now in NVRAM, but the modem stack has the old value cached. Only a r
 
 ```
 tmp/
-├── backup_LD0B_001.bin    # the pulled file before patching
-└── patched_LD0B_001.bin   # the file we pushed back (only if you said "y")
+├── backup_LD0B_001.bin    # the pulled file (always created on a successful pull)
+└── patched_LD0B_001.bin   # the file we pushed back (only if you confirmed the patch at the prompt)
 ```
 
-Both are 384 bytes; decrypt either with `imei_tool.py read`. Useful for **recovery** (push the backup back if something boots wrong), **diff** (`cmp -l` shows which bytes changed — the 32-byte block at offset 0x40), or **auditing** (confirm what was written). Re-running overwrites; `rm -rf tmp/` for a clean slate.
+`backup_LD0B_001.bin` exists after any run that got past the pull step. `patched_LD0B_001.bin` exists only if you proceeded with a patch (i.e. answered `y` / `1` / `2` at the change-IMEI prompt and gave a valid 15-digit IMEI); aborting at that prompt leaves only the backup. Both files are 384 bytes; decrypt either with `imei_tool.py read`. Useful for **recovery** (push the backup back if something boots wrong), **diff** (`cmp -l` shows which bytes changed — only the 32-byte block at the slot's offset), or **auditing** (confirm what was written). Re-running overwrites; `rm -rf tmp/` for a clean slate.

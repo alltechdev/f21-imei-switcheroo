@@ -475,7 +475,13 @@ Every step above can be independently reproduced with:
 
 1. A rooted DuoQin F21 Pro
 2. The stock modem firmware (`md1img_a.bin`) unpacked with [md1imgpy](https://github.com/R0rt1z2/md1imgpy)
-3. `adb exec-out su -c "cat /mnt/vendor/nvdata/md/NVRAM/NVD_IMEI/LD0B_001"` to pull the encrypted file
+3. To pull the encrypted file (binary-safe on F21 Pro / Android 11 *and* later Android + Magisk setups where `su`'s stdio injects CRLF):
+   ```bash
+   adb shell su -c "cp /mnt/vendor/nvdata/md/NVRAM/NVD_IMEI/LD0B_001 /sdcard/LD0B_001 && chmod 644 /sdcard/LD0B_001"
+   adb pull /sdcard/LD0B_001
+   adb shell su -c "rm /sdcard/LD0B_001"
+   ```
+   The shorter `adb exec-out su -c "cat …" > LD0B_001` form works on F21 Pro / Android 11 but corrupts the pull on Android 13 / Magisk (see [Hardware validation (TIQ M5)](#hardware-validation-tiq-m5-dual-sim) below for the byte-level evidence).
 4. Python 3.6+ with `pycryptodome` and `hashlib` (stdlib) to decrypt and test checksum hypotheses
 5. `adb reboot` to verify the modem accepts or rejects the written IMEI
 
@@ -513,7 +519,12 @@ Independent end-to-end confirmation on a live **TIQ M5** (MT6761, dual-SIM):
 
 4. **Live hardware test.** Built a test `nvdata.bin` by chain-patching slot 1 then slot 2 to a single test IMEI (`123456789012345`); per-copy verification confirmed all 4 copies had both slots = the test IMEI with valid MD5-XOR checksums and zero padding intact. Flashed back via mtkclient, booted the device. Both IMEIs read as `123456789012345` on-device — confirming the modem accepts patched bytes at runtime, both slots are independently patchable, and the AES key + slot offsets + format + checksum + BCD encoding are all correct on TIQ M5.
 
+5. **`live_patch.sh` end-to-end (rooted-ADB flow).** Two consecutive runs on the same device, each followed by a reboot:
+   - Run 1: dual-SIM `[1/2/n]` prompt → choose slot 2 → patch slot 2 to a fresh test IMEI. Post-script: slot 1 byte-identical to its pre-script value (per-copy preservation verified — only the slot-2 ciphertext block changed), slot 2 = the new IMEI. Post-reboot: file md5 byte-identical to script's `tmp/patched_LD0B_001.bin` (modem persists, no rollback).
+   - Run 2: same prompt → choose slot 1 → patch slot 1 to a fresh test IMEI. Post-script: slot 2 byte-identical to its run-1-patched value (the previously-patched slot is preserved across this run), slot 1 = the new IMEI. Post-reboot: file md5 byte-identical to script's patched file again.
+   - **Observation that drove a script change:** the original pull (`adb exec-out su -c "cat $IMEI_PATH" > backup`) returned 387 bytes on this device's Android 13 + Magisk combo. Every byte with value `0x0a` in the file appeared as `0x0d 0x0a` in the pull — for example the source file's first 8 bytes are `4c 44 49 00 10 ef 0a 00` ("LDI" header), which were pulled back as `4c 44 49 00 10 ef 0d 0a 00`. The script's defense-in-depth size check (`wc -c == 384`) correctly rejected it. Pull was switched to `cp via su` to `/sdcard` + `adb pull` (SYNC-protocol-based, binary-safe by construction); same script then verified end-to-end on both TIQ M5 / Android 13 *and* F21 Pro / Android 11 + Magisk in the same session.
+
 ### What is *not* yet checked on TIQ M5
 
 - **Bad-checksum / factory-rollback behavior** — only valid patched bytes have been flashed; the F21 Pro–style rollback handler hasn't been exercised on TIQ M5.
-- **`live_patch.sh` end-to-end** — flashing was done via mtkclient on the offline partition; the rooted-ADB live-patch flow (`live_patch.sh` pulls / patches / pushes the 384-byte file) hasn't been run against a TIQ M5.
+- **Which layer injects the CRLF** — observed empirically (Android 13 + Magisk on TIQ M5: yes; Android 11 + Magisk on F21 Pro: no). The exact culprit (Magisk's `su` stdio, `adb` daemon, kernel PTY allocation) wasn't isolated; the cp + adb-pull approach sidesteps it regardless.
