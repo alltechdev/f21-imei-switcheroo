@@ -1,4 +1,4 @@
-# f21-imei-switcheroo
+# mtk-imei-switcheroo
 
 Read and write IMEI(s) in the NVRAM `LD0B_001` file on **DuoQin F21 Pro** (single-SIM), **DuoQin F25** (dual-SIM), and **TIQ M5** (dual-SIM, MT6761) — or in a full `nvdata` partition image — offline, no device needed.
 
@@ -7,8 +7,8 @@ Read and write IMEI(s) in the NVRAM `LD0B_001` file on **DuoQin F21 Pro** (singl
 ## Install
 
 ```bash
-git clone https://github.com/alltechdev/f21-imei-switcheroo
-cd f21-imei-switcheroo
+git clone https://github.com/alltechdev/mtk-imei-switcheroo
+cd mtk-imei-switcheroo
 pip install pycryptodome
 ```
 
