@@ -503,9 +503,7 @@ The walkthrough above was conducted on a live F21 Pro (single-SIM). The same key
 
 - **No live F25 hardware.** No `adb`/`fastboot`/reboot test was performed on a real F25.
 - **No bad-checksum behavior on F25.** The modem-side rollback-vs-ECC-mode response confirmed on the F21 Pro (Step 3 cases 2 and 3 above) has not been observed on F25.
-- **No cross-validation against any other dual-SIM MT67xx device.** Only F25 was checked.
-
-The cross-device evidence is strong enough to say `imei_tool.py -s 2` produces modem-acceptable bytes for the F25 *firmware* layout. Whether the F25 modem's runtime actually accepts a patched dual-SIM `LD0B_001` and brings the radio up has not been tested directly on F25 hardware; the closest hardware evidence is F21 Pro slot 1 (single-SIM) and TIQ M5 both slots (dual-SIM, see next section), where the same crypto / format / checksum produce modem-acceptable bytes that survive boot.
+The cross-device evidence is strong enough to say `imei_tool.py -s 2` produces modem-acceptable bytes for the F25 *firmware* layout. Whether the F25 modem's runtime actually accepts a patched dual-SIM `LD0B_001` and brings the radio up has not been tested directly on F25 hardware; the closest hardware evidence is F21 Pro slot 1 (single-SIM) and TIQ M5 both slots (dual-SIM, see next section), where the same crypto / format / checksum produce modem-acceptable bytes that survive boot. The TIQ M5 result *is* the cross-validation against another dual-SIM MT67xx device that this section originally noted as missing.
 
 ## Hardware validation (TIQ M5, dual-SIM)
 
@@ -524,7 +522,25 @@ Independent end-to-end confirmation on a live **TIQ M5** (MT6761, dual-SIM):
    - Run 2: same prompt → choose slot 1 → patch slot 1 to a fresh test IMEI. Post-script: slot 2 byte-identical to its run-1-patched value (the previously-patched slot is preserved across this run), slot 1 = the new IMEI. Post-reboot: file md5 byte-identical to script's patched file again.
    - **Observation that drove a script change:** the original pull (`adb exec-out su -c "cat $IMEI_PATH" > backup`) returned 387 bytes on this device's Android 13 + Magisk combo. Every byte with value `0x0a` in the file appeared as `0x0d 0x0a` in the pull — for example the source file's first 8 bytes are `4c 44 49 00 10 ef 0a 00` ("LDI" header), which were pulled back as `4c 44 49 00 10 ef 0d 0a 00`. The script's defense-in-depth size check (`wc -c == 384`) correctly rejected it. Pull was switched to `cp via su` to `/sdcard` + `adb pull` (SYNC-protocol-based, binary-safe by construction); same script then verified end-to-end on both TIQ M5 / Android 13 *and* F21 Pro / Android 11 + Magisk in the same session.
 
+6. **Bad-checksum behavior on TIQ M5: the modem deletes the file.** Test: pulled the live `LD0B_001`, decrypted slot 1, XOR'd the 8-byte MD5-XOR checksum at `pt[0x0a:0x12]` with `0xff` (so the checksum no longer matched MD5-XOR over `pt[0:10]`), re-encrypted, pushed back. After reboot, `LD0B_001` was **absent** from `/mnt/vendor/nvdata/md/NVRAM/NVD_IMEI/` — only the unrelated `FILELIST`, `NV01_000`, and `NV0S_000` were left. The other slot (untouched, still valid) didn't save the file: the modem deletes the whole `LD0B_001` on a single bad slot. **This differs from F21 Pro,** which silently rewrites `LD0B_001` with a factory backup IMEI block (Step 3 cases 2 and 3 above) and keeps the radio up. The TIQ M5 behavior also retroactively explains the initial state of this device when first connected for testing — `LD0B_001` was missing then too, consistent with a prior bad-checksum write that the modem cleared. Restoration: pushing a valid `LD0B_001` back and rebooting is sufficient; the modem accepts it, persists across reboot, both slots read back correctly. No fastboot / mtkclient flash was needed.
+
+7. **CRLF-injection layer isolated to `adb exec-out` + `su -c "..."`.** Test: pushed a 6-byte probe (`00 0a 00 0a 00 0a`) to `/sdcard/`, pulled it back five different ways, compared each output against the source.
+
+   | Pull method | Output | Result |
+   |---|---|---|
+   | `adb pull` (SYNC protocol) | 6 bytes (`000a 000a 000a`) | clean |
+   | `adb exec-out cat /sdcard/probe` (no su) | 6 bytes | clean |
+   | `adb shell cat /sdcard/probe` (no su) | 6 bytes | clean |
+   | **`adb exec-out su -c "cat /sdcard/probe"`** | **9 bytes (`000d0a 000d0a 000d0a`)** | **corrupted** |
+   | `adb shell su -c "cat /sdcard/probe"` | 6 bytes | clean |
+
+   So the corruption requires the *combination* of `adb exec-out` (which doesn't allocate a PTY) with Magisk's `su -c "..."` invocation. Neither layer alone produces it on this device:
+   - `adb exec-out` by itself pipes raw bytes (test 2).
+   - Magisk's `su` by itself, when invoked under `adb shell` (which *does* allocate a PTY), produces clean output (test 5) — apparently because `su` reuses the parent PTY's terminal settings rather than spawning its own.
+   - Only when `su` is invoked under `exec-out`'s no-PTY environment does it appear to allocate its own line-discipline-applying PTY for the executed command, which is what runs `\n` → `\r\n`.
+
+   The `cp via su /sdcard + adb pull` form sidesteps this because the binary content never traverses `su`'s stdout — `cp` writes to the filesystem directly, and `adb pull` uses the SYNC protocol, neither of which involves a PTY.
+
 ### What is *not* yet checked on TIQ M5
 
-- **Bad-checksum / factory-rollback behavior** — only valid patched bytes have been flashed; the F21 Pro–style rollback handler hasn't been exercised on TIQ M5.
-- **Which layer injects the CRLF** — observed empirically (Android 13 + Magisk on TIQ M5: yes; Android 11 + Magisk on F21 Pro: no). The exact culprit (Magisk's `su` stdio, `adb` daemon, kernel PTY allocation) wasn't isolated; the cp + adb-pull approach sidesteps it regardless.
+- (no remaining items — both bad-checksum behavior and the CRLF-layer question are resolved above.)
