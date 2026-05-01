@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """
-DuoQin F21 Pro IMEI Tool — read/write the IMEI in the device's
+DuoQin F21 Pro / F25 IMEI Tool — read/write IMEI(s) in the device's
 NVRAM LD0B_001 file or in a full nvdata partition image.
 
 Usage:
   imei_tool.py read  <LD0B_001 or nvdata.img/.bin>
-  imei_tool.py write <LD0B_001 or nvdata.img/.bin> <IMEI> [-o output]
+  imei_tool.py write <LD0B_001 or nvdata.img/.bin> <IMEI> [-s 1|2] [-o output]
+
+`read` prints both IMEI slots; an unpopulated slot prints `(empty)`.
+`write` defaults to slot 1; pass `-s 2` to rewrite the second IMEI on
+dual-SIM devices (F25). Slot 1 is the only slot the F21 Pro uses.
 
 Examples:
   python3 imei_tool.py read LD0B_001
   python3 imei_tool.py write LD0B_001 350859600862948 -o LD0B_001_new
+  python3 imei_tool.py write LD0B_001 350859600862948 -s 2 -o LD0B_001_new
   python3 imei_tool.py write nvdata.img 350859600862948 -o nvdata_patched.img
 """
 
@@ -71,22 +76,28 @@ def bcd_to_imei(bcd):
     return s if len(s) == 15 else None
 
 
-def read_imei(ld0b_data):
-    pt = nvram_ecb_decrypt(ld0b_data[HEADER_SIZE:HEADER_SIZE + IMEI_BLOCK_SIZE])
+def _slot_offset(slot):
+    if slot not in (1, 2):
+        die(f"Slot must be 1 or 2, got {slot}")
+    return HEADER_SIZE + (slot - 1) * IMEI_BLOCK_SIZE
+
+
+def read_imei(ld0b_data, slot=1):
+    off = _slot_offset(slot)
+    pt = nvram_ecb_decrypt(ld0b_data[off:off + IMEI_BLOCK_SIZE])
     return bcd_to_imei(pt[:IMEI_BCD_SIZE])
 
 
-def patch_imei(ld0b_data, imei):
-    pt = bytearray(nvram_ecb_decrypt(
-        ld0b_data[HEADER_SIZE:HEADER_SIZE + IMEI_BLOCK_SIZE]))
+def patch_imei(ld0b_data, imei, slot=1):
+    off = _slot_offset(slot)
+    pt = bytearray(nvram_ecb_decrypt(ld0b_data[off:off + IMEI_BLOCK_SIZE]))
     pt[:IMEI_BCD_SIZE] = imei_to_bcd(imei)
     pt[8] = 0xFF
     pt[9] = 0xFF
     pt[10:18] = _md5_xor_checksum(bytes(pt[:10]))
     pt[18:32] = b'\x00' * 14
-
     out = bytearray(ld0b_data)
-    out[HEADER_SIZE:HEADER_SIZE + IMEI_BLOCK_SIZE] = nvram_ecb_encrypt(bytes(pt))
+    out[off:off + IMEI_BLOCK_SIZE] = nvram_ecb_encrypt(bytes(pt))
     return bytes(out)
 
 
@@ -147,6 +158,12 @@ def load_ld0b(filepath):
     return data
 
 
+def _print_both_imeis(ld0b_data):
+    for slot in (1, 2):
+        v = read_imei(ld0b_data, slot=slot)
+        print(f"IMEI {slot}: {v or '(empty)'}")
+
+
 def main():
     argv = sys.argv[1:]
     if len(argv) < 2:
@@ -162,17 +179,26 @@ def main():
         die(f"File not found: {filepath}")
 
     if cmd == "read":
-        print(f"IMEI: {read_imei(load_ld0b(filepath)) or '(empty)'}")
+        _print_both_imeis(load_ld0b(filepath))
         return
 
     if len(argv) < 3:
-        die("Usage: imei_tool.py write <file> <IMEI> [-o output]")
+        die("Usage: imei_tool.py write <file> <IMEI> [-s 1|2] [-o output]")
     imei = argv[2]
     output = None
+    slot = 1
     i = 3
     while i < len(argv):
         if argv[i] == '-o' and i + 1 < len(argv):
             output = argv[i + 1]
+            i += 2
+        elif argv[i] in ('-s', '--slot') and i + 1 < len(argv):
+            try:
+                slot = int(argv[i + 1])
+            except ValueError:
+                die(f"--slot must be 1 or 2, got '{argv[i + 1]}'")
+            if slot not in (1, 2):
+                die(f"--slot must be 1 or 2, got {slot}")
             i += 2
         else:
             die(f"Unknown argument: {argv[i]}")
@@ -194,7 +220,7 @@ def main():
         off, orig_ld0b = _find_ld0b_raw(img)
         if off is None:
             die("LD0B_001 not found in partition image")
-        patched_ld0b = patch_imei(orig_ld0b, imei)
+        patched_ld0b = patch_imei(orig_ld0b, imei, slot=slot)
         imei_count = _patch_all_copies(
             img, LD0B_SIG, orig_ld0b[:HEADER_SIZE], HEADER_SIZE,
             patched_ld0b, LD0B_SIZE)
@@ -205,13 +231,16 @@ def main():
         except (PermissionError, FileNotFoundError) as e:
             die(f"Cannot write to {output}: {e}")
 
-        print(f"Patched IMEI ({imei_count} copies)")
+        print(f"Patched IMEI {slot} ({imei_count} copies)")
         print(f"Output: {output}")
 
         with open(output, 'rb') as f:
             verify_img = f.read()
         _, verify_ld0b = _find_ld0b_raw(verify_img)
-        print(f"Verified IMEI: {read_imei(verify_ld0b)}")
+        print("Verified:")
+        for s in (1, 2):
+            v = read_imei(verify_ld0b, slot=s)
+            print(f"  IMEI {s}: {v or '(empty)'}")
 
     else:
         if not output:
@@ -219,11 +248,15 @@ def main():
         ld0b = load_ld0b(filepath)
         try:
             with open(output, 'wb') as f:
-                f.write(patch_imei(ld0b, imei))
+                f.write(patch_imei(ld0b, imei, slot=slot))
         except (PermissionError, FileNotFoundError) as e:
             die(f"Cannot write to {output}: {e}")
-        print(f"Written: {output}")
-        print(f"Verified: {read_imei(load_ld0b(output))}")
+        print(f"Written: {output}  (IMEI {slot} = {imei})")
+        out_ld0b = load_ld0b(output)
+        print("Verified:")
+        for s in (1, 2):
+            v = read_imei(out_ld0b, slot=s)
+            print(f"  IMEI {s}: {v or '(empty)'}")
 
 
 if __name__ == "__main__":
