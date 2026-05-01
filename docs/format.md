@@ -1,6 +1,6 @@
 # `LD0B_001` binary format and crypto
 
-This page documents the on-disk layout of the F21 Pro's IMEI NVRAM file, the encryption used to protect it, and the modem-validated checksum that gates whether a written IMEI is accepted. It's the reference an engineer would need to reimplement what `imei_tool.py` does.
+This page documents the on-disk layout of the IMEI NVRAM file on MT67xx devices (verified against F21 Pro, F25, and TIQ M5), the encryption used to protect it, and the modem-validated checksum that gates whether a written IMEI is accepted. It's the reference an engineer would need to reimplement what `imei_tool.py` does.
 
 ## File layout
 
@@ -19,7 +19,7 @@ offset  size   contents
 0x008    56    fixed header (modem-internal metadata, not modified by this tool)
 ─────────────────────────────────────────────────────────────────────
 0x040    32    encrypted IMEI block #1 — slot 1 (AES-128-ECB, two 16-byte AES blocks)
-0x060    32    encrypted IMEI block #2 — slot 2 (populated on dual-SIM, e.g. F25;
+0x060    32    encrypted IMEI block #2 — slot 2 (populated on dual-SIM, e.g. F25 and TIQ M5;
                                                   zero/0xFF on single-SIM, e.g. F21 Pro)
 ─────────────────────────────────────────────────────────────────────
 0x080   256    padding / reserved (typically 0xFF)
@@ -27,11 +27,11 @@ offset  size   contents
                                                           total = 0x180 = 384 bytes
 ```
 
-`imei_tool.py` patches whichever block is selected by the `-s 1|2` flag (default 1). The other block, the file header, and the trailing padding are untouched. On the F21 Pro slot 2 is unused; on the F25 it holds the second IMEI.
+`imei_tool.py` patches whichever block is selected by the `-s 1|2` flag (default 1). The other block, the file header, and the trailing padding are untouched. On the F21 Pro slot 2 is unused; on F25 and TIQ M5 it holds the second IMEI.
 
 ### Signature
 
-The first 8 bytes `LDI\x00\x10\xef\x0a\x00` are stable across every `LD0B_001` we've observed on the F21 Pro. The first 4 are the human-readable `LDI\x00` (NVRAM file family marker, MTK convention). The next 4 (`10 ef 0a 00`) are a fixed format/version constant.
+The first 8 bytes `LDI\x00\x10\xef\x0a\x00` are stable across every `LD0B_001` we've observed on the F21 Pro, F25, and TIQ M5. The first 4 are the human-readable `LDI\x00` (NVRAM file family marker, MTK convention). The next 4 (`10 ef 0a 00`) are a fixed format/version constant.
 
 When scanning a multi-MB partition image for `LD0B_001` blobs, the tool greps for the full 8-byte signature (`LD0B_SIG`) rather than just the 4-byte magic — this drops false-positive hit rate to effectively zero on real images.
 
@@ -175,7 +175,7 @@ The runtime derivation produces `3f06bd14d45fa985dd027410f0214d22` byte-for-byte
 - makes the actually-used key explicit and grep-able,
 - eliminates a class of bugs where the derivation algorithm could subtly diverge from the modem's.
 
-Other MTK OEMs (Samsung, OPPO, etc.) use different seeds and would derive different keys. This project only targets the F21 Pro, so the seed-variance question doesn't apply.
+Other MTK OEMs (Samsung, OPPO, etc.) use different seeds and would derive different keys. The verified targets here (F21 Pro, F25, TIQ M5) all use the standard MTK seed and therefore share the same hardcoded key.
 
 ## End-to-end byte trace
 

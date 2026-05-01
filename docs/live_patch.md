@@ -1,15 +1,14 @@
 # `live_patch.sh` — reference
 
-Host-side bash that drives a live, rooted F21 Pro through ADB: pulls the encrypted IMEI file, hands it to `imei_tool.py` to rewrite, pushes it back through `su`, offers to reboot. Short and linear; the binary-format and crypto knowledge lives in `imei_tool.py`, this script is plumbing.
+Host-side bash that drives a live, rooted MTK device through ADB: pulls the encrypted IMEI file, hands it to `imei_tool.py` to rewrite, pushes it back through `su`, offers to reboot. Short and linear; the binary-format and crypto knowledge lives in `imei_tool.py`, this script is plumbing. Live-tested on F21 Pro; per-device verification status lives in the top-level [README](../README.md#verification-status).
 
 ## Header
 
 ```bash
 #!/bin/bash
-# Interactive IMEI changer for the rooted DuoQin F21 Pro via ADB.
 ```
 
-`#!/bin/bash` rather than `/bin/sh` because the script uses `read -p`. Requirements and verification status live in the top-level [README](../README.md).
+`#!/bin/bash` rather than `/bin/sh` because the script uses `read -p`. No other comments — the script body is self-documenting and this doc is the prose reference.
 
 ## Configuration
 

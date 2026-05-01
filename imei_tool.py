@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-DuoQin F21 Pro / F25 IMEI Tool — read/write IMEI(s) in the device's
-NVRAM LD0B_001 file or in a full nvdata partition image.
+MTK NVRAM IMEI Tool — read/write IMEI(s) in the device's NVRAM LD0B_001
+file or in a full nvdata partition image.
+
+Verified on DuoQin F21 Pro (single-SIM), DuoQin F25 (dual-SIM, firmware
+only), and TIQ M5 (MT6761, dual-SIM, live device).
 
 Usage:
   imei_tool.py read  <LD0B_001 or nvdata.img/.bin>
@@ -9,7 +12,7 @@ Usage:
 
 `read` prints both IMEI slots; an unpopulated slot prints `(empty)`.
 `write` defaults to slot 1; pass `-s 2` to rewrite the second IMEI on
-dual-SIM devices (F25). Slot 1 is the only slot the F21 Pro uses.
+dual-SIM devices (F25, TIQ M5). Slot 1 is the only slot the F21 Pro uses.
 
 Examples:
   python3 imei_tool.py read LD0B_001

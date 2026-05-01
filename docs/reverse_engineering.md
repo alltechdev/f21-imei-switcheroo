@@ -499,4 +499,21 @@ The walkthrough above was conducted on a live F21 Pro (single-SIM). The same key
 - **No bad-checksum behavior on F25.** The modem-side rollback-vs-ECC-mode response confirmed on the F21 Pro (Step 3 cases 2 and 3 above) has not been observed on F25.
 - **No cross-validation against any other dual-SIM MT67xx device.** Only F25 was checked.
 
-The cross-device evidence is strong enough to say `imei_tool.py -s 2` produces modem-acceptable bytes for the F25 *firmware* layout. Whether the F25 modem's runtime actually accepts a patched dual-SIM `LD0B_001` and brings the radio up has only been demonstrated on F21 Pro slot 1.
+The cross-device evidence is strong enough to say `imei_tool.py -s 2` produces modem-acceptable bytes for the F25 *firmware* layout. Whether the F25 modem's runtime actually accepts a patched dual-SIM `LD0B_001` and brings the radio up has not been tested directly on F25 hardware; the closest hardware evidence is F21 Pro slot 1 (single-SIM) and TIQ M5 both slots (dual-SIM, see next section), where the same crypto / format / checksum produce modem-acceptable bytes that survive boot.
+
+## Hardware validation (TIQ M5, dual-SIM)
+
+Independent end-to-end confirmation on a live **TIQ M5** (MT6761, dual-SIM):
+
+1. **Firmware-level checks.** Same NVRAM crypto framework as F21 Pro / F25: `SST_secure_exp.c`, `nvram_sec.c`, `custom_nvram_sec.c` source-path strings present in the modem binary; the same standard MTK `NVRAM_SEED` / `KEY_CONST` / `SECOND_SEED` constants present at MT6761-specific offsets in `md1img-verified.img`; same `Z:\NVRAM\NVD_IMEI` IMEI path; same `SBP_IMEI_VERIFY_FAIL_ENTER_ECC_MODE` / `SBP_IMEI_LOCK_SUPPORT` symbols; modem built with `GEMINI_PLUS=2` (dual-SIM).
+
+2. **Decryption check.** Pulled `nvdata.bin` from a live device via [mtkclient](https://github.com/bkerler/mtkclient). Four LD0B_001 copies present: three byte-identical 384-byte bodies at offsets `0x1202000` / `0x180414e` / `0x2e0314e` plus one distinct body at `0x100214e` whose slot 1 IMEI differs from the others (slot 2 IMEI is the same across all four). All four copies share an identical 0x40-byte header. All four decrypt cleanly with `3f06bd14d45fa985dd027410f0214d22`; all eight slot blocks (4 copies × 2 slots) carry valid MD5-XOR checksums over `pt[0:10]`; all fillers are `00 00` (stock convention). Which of the byte-identical trio is the live ext4 filesystem block versus journal/COW leftovers wasn't determined — the patching strategy doesn't depend on knowing.
+
+3. **Bug surfaced and fixed.** Unlike F25 — where the factory backup's header bytes `[0x2a:0x2c]` differ from the live copies and the `_patch_all_copies` header-equality gate correctly excludes it — TIQ M5's four copies share a byte-identical 0x40-byte header. The original `_patch_all_copies` blasted the patched-first-copy's 384 bytes onto every header-matching copy, which on TIQ M5 corrupted the live copies' slot 1 (overwriting it with the distinct copy's slot 1 IMEI). The fix patches each copy in place — only the requested slot's 32-byte ciphertext is rewritten per copy. F21 Pro (15-copy real partition image) and F25 (firmware image) produce byte-identical output before and after the fix because their multi-copy scenarios never had body-differing same-header copies; TIQ M5 only works correctly after.
+
+4. **Live hardware test.** Built a test `nvdata.bin` by chain-patching slot 1 then slot 2 to a single test IMEI (`123456789012345`); per-copy verification confirmed all 4 copies had both slots = the test IMEI with valid MD5-XOR checksums and zero padding intact. Flashed back via mtkclient, booted the device. Both IMEIs read as `123456789012345` on-device — confirming the modem accepts patched bytes at runtime, both slots are independently patchable, and the AES key + slot offsets + format + checksum + BCD encoding are all correct on TIQ M5.
+
+### What is *not* yet checked on TIQ M5
+
+- **Bad-checksum / factory-rollback behavior** — only valid patched bytes have been flashed; the F21 Pro–style rollback handler hasn't been exercised on TIQ M5.
+- **`live_patch.sh` end-to-end** — flashing was done via mtkclient on the offline partition; the rooted-ADB live-patch flow (`live_patch.sh` pulls / patches / pushes the 384-byte file) hasn't been run against a TIQ M5.

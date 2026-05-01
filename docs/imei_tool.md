@@ -121,11 +121,13 @@ Returns the full 384-byte patched `LD0B_001` as `bytes`.
 
 Returns `(offset, copy)` for the first `LD0B_SIG` followed by ≥`LD0B_SIZE` more bytes; `(None, None)` if no match. Locates `LD0B_001` inside a multi-MB partition image without mounting the ext4 filesystem; the 8-byte signature makes false positives effectively zero.
 
-### `_patch_all_copies(img, sig, orig_header, header_len, patched_data, data_len)`
+### `_patch_all_copies(img, sig, header_len, slot, imei)`
 
-Walks `img` and overwrites every `sig` match whose first `header_len` bytes equal `orig_header`. Returns the count.
+Walks `img` for every `sig` match. The first match's `header_len`-byte header sets the equality gate — only matches whose first `header_len` bytes equal that header get patched. Each gated match is patched **in place**: the 32-byte ciphertext at the slot's offset *within that copy* is decrypted, the new IMEI/checksum/padding written, re-encrypted, and spliced back. The rest of each copy (header, the *other* slot's ciphertext, trailing padding) is preserved per-copy. Returns the count of patched copies. Truncated finds at the very end of the image (less than `LD0B_SIZE` bytes available) are skipped.
 
 ext4 keeps stale block contents around (journal, orphan inodes, COW remnants) and `LD0B_001` is small enough that historical versions persist as fragments. We've observed up to 15 copies in a single dumped nvdata image. The modem reads through the live filesystem, but updating every copy is cheap insurance against a post-flash fsck/journal-replay re-surfacing a stale one.
+
+The per-copy in-place semantic matters when same-header copies have different bodies. On the F21 Pro partition image all 15 copies have byte-identical bodies (slot 1 = the device's IMEI, slot 2 = empty) so blast-replace and per-copy in-place produce the same output. On the F25 partition image the factory backup has a *different* header so the equality gate excludes it from patching. On the TIQ M5 partition image four copies share an identical 0x40-byte header but the bodies differ — three byte-identical bodies plus one distinct body whose slot 1 IMEI differs — and patching the requested slot in place is what stops the byte-identical trio's un-targeted slot from being clobbered with the distinct copy's value.
 
 ## CLI plumbing
 
@@ -172,4 +174,4 @@ fastboot flash nvdata nvdata_patched.img
 fastboot reboot
 ```
 
-`_patch_all_copies` ensures every `LD0B_001` copy in the image — live, journal, backup — agrees on the new IMEI. End-to-end verified on the F21 Pro.
+`_patch_all_copies` patches every header-matching `LD0B_001` copy in the image (live + ext4 journal/COW leftovers) in place — each copy's requested slot becomes the new IMEI while its other slot is preserved per-copy. Distinct copies whose 0x40-byte header differs (e.g. F25's factory backup) are intentionally skipped. End-to-end verified on the F21 Pro (slot 1) via `fastboot flash` and on the TIQ M5 (both slots) via mtkclient flash + boot.
