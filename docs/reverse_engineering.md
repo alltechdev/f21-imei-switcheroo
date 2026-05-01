@@ -478,3 +478,25 @@ Every step above can be independently reproduced with:
 3. `adb exec-out su -c "cat /mnt/vendor/nvdata/md/NVRAM/NVD_IMEI/LD0B_001"` to pull the encrypted file
 4. Python 3.6+ with `pycryptodome` and `hashlib` (stdlib) to decrypt and test checksum hypotheses
 5. `adb reboot` to verify the modem accepts or rejects the written IMEI
+
+## Cross-device validation (F25, firmware-only)
+
+The walkthrough above was conducted on a live F21 Pro (single-SIM). The same key, slot offsets, and checksum were independently re-validated against a stock **DuoQin F25** (dual-SIM) firmware ZIP — no F25 hardware was used.
+
+### What was checked against the F25 firmware
+
+1. **Locate `LD0B_001` in the F25 nvdata image.** Unzip the F25 firmware, scan `nvdata.bin` for the `LDI\x00\x10\xef\x0a\x00` signature. Three copies are present: two byte-identical live copies (one active, one ext4 leftover sharing the same 0x40-byte header) and a distinct **factory backup** at offset `0x1c04000`. The backup has different IMEIs from the live copies, header bytes `[0x2a:0x2c]` differ (`0x68 0x10` live vs `0x37 0xf9` backup — likely a sequence/version field), and both backup slots carry their own valid checksums.
+
+2. **Same AES key.** `AES.new(0x3f06bd14d45fa985dd027410f0214d22, ECB).decrypt(...)` on both 32-byte slots of the F25 live `LD0B_001` produces well-formed plaintext: BCD-encoded 15-digit IMEIs at `[0:8]` of each slot, a 2-byte filler at `[8:10]` (`00 00` on the live copy, `FF FF` on the factory backup — both round-trip cleanly because the checksum is computed over whichever bytes are present), and a checksum at `[10:18]` that matches MD5-XOR over `pt[0:10]` byte-for-byte.
+
+3. **Both slots populated.** Unlike the F21 Pro (single-SIM, slot 2 = all-zero / all-`0xFF`), the F25 has *both* slots holding real IMEIs. The two IMEIs differ — confirming MTK uses one slot per SIM rather than mirroring.
+
+4. **Round-trip through `imei_tool.py`.** `imei_tool.py write nvdata.bin <new_imei> -s 1` and `-s 2` against the F25 image: read-back via `imei_tool.py read` returns the new IMEIs in the corresponding slots, the other slot's bytes are byte-identical to the original, and `_patch_all_copies` updates the two header-matching live copies while leaving the factory backup at `0x1c04000` alone (its differing `[0x2a:0x2c]` header bytes cause the header-equality matcher to skip it — by analogy with the F21 Pro's factory-rollback handler this is desirable, but rollback behavior on F25 itself has not been observed).
+
+### What was *not* checked
+
+- **No live F25 hardware.** No `adb`/`fastboot`/reboot test was performed on a real F25.
+- **No bad-checksum behavior on F25.** The modem-side rollback-vs-ECC-mode response confirmed on the F21 Pro (Step 3 cases 2 and 3 above) has not been observed on F25.
+- **No cross-validation against any other dual-SIM MT67xx device.** Only F25 was checked.
+
+The cross-device evidence is strong enough to say `imei_tool.py -s 2` produces modem-acceptable bytes for the F25 *firmware* layout. Whether the F25 modem's runtime actually accepts a patched dual-SIM `LD0B_001` and brings the radio up has only been demonstrated on F21 Pro slot 1.

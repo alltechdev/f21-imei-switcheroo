@@ -18,15 +18,16 @@ offset  size   contents
 0x000     8    LD0B signature: 4C 44 49 00 10 EF 0A 00   ("LDI\0\x10\xef\x0a\x00")
 0x008    56    fixed header (modem-internal metadata, not modified by this tool)
 ─────────────────────────────────────────────────────────────────────
-0x040    32    encrypted IMEI block #1 (AES-128-ECB, two 16-byte AES blocks)
-0x060    32    encrypted IMEI block #2 (typically zero/0xFF on single-SIM units)
+0x040    32    encrypted IMEI block #1 — slot 1 (AES-128-ECB, two 16-byte AES blocks)
+0x060    32    encrypted IMEI block #2 — slot 2 (populated on dual-SIM, e.g. F25;
+                                                  zero/0xFF on single-SIM, e.g. F21 Pro)
 ─────────────────────────────────────────────────────────────────────
 0x080   256    padding / reserved (typically 0xFF)
 ─────────────────────────────────────────────────────────────────────
                                                           total = 0x180 = 384 bytes
 ```
 
-`imei_tool.py` patches IMEI block #1 only. Block #2 is left untouched.
+`imei_tool.py` patches whichever block is selected by the `-s 1|2` flag (default 1). The other block, the file header, and the trailing padding are untouched. On the F21 Pro slot 2 is unused; on the F25 it holds the second IMEI.
 
 ### Signature
 

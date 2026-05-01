@@ -97,33 +97,51 @@ file_size=$(wc -c < "$BACKUP")
 Defense in depth: validate the pull is exactly 384 bytes before feeding it to `imei_tool.py`.
 
 ```bash
-current_imei=$(python3 "$TOOL" read "$BACKUP" 2>/dev/null | grep "IMEI:" | awk '{print $2}')
-echo "  Current IMEI: ${current_imei:-(empty)}"
+read_output=$(python3 "$TOOL" read "$BACKUP" 2>/dev/null) || die "Read failed"
+echo "$read_output" | sed 's/^/  /'
+echo ""
+
+populated=$(echo "$read_output" | grep -cv '(empty)')
 ```
 
-Hand the pulled file to `imei_tool.py read`, parse the `IMEI:` line. The `${var:-(empty)}` expansion handles uninitialised blocks gracefully.
+Hand the pulled file to `imei_tool.py read` once. The output is two lines (`IMEI 1: …` / `IMEI 2: …`); reprint indented for readability and keep the raw text in `$read_output` for the next step. `populated` counts the lines *not* matching `(empty)` — this is how the script tells dual-SIM (`populated == 2`) from single-SIM (`populated == 1`) without hardcoding a device list.
 
-## Prompts
+## Adaptive prompt
 
 ```bash
-read -p "Change IMEI? [y/N] " ans
-if [ "$ans" != "y" ] && [ "$ans" != "Y" ]; then
-    echo "No changes made."
-    exit 0
+if [ "$populated" -ge 2 ]; then
+    read -p "Change which IMEI? [1/2/n] " choice
+    case "$choice" in
+        1|2) slot="$choice" ;;
+        *) echo "No changes made."; exit 0 ;;
+    esac
+else
+    slot=1
+    read -p "Change IMEI? [y/N] " ans
+    case "$ans" in
+        y|Y) ;;
+        *) echo "No changes made."; exit 0 ;;
+    esac
 fi
 ```
 
-Default-no on both prompts (this one and the reboot prompt at the end). Hitting Enter aborts; `live_patch.sh` is safe to use just to read the current IMEI.
+Two prompt shapes selected by the slot count from the previous step:
+
+- **Dual-SIM (`populated >= 2`)** — `Change which IMEI? [1/2/n]`. Anything other than `1` or `2` aborts cleanly. `slot` is set to the user's choice.
+- **Single-SIM (`populated < 2`)** — the original `Change IMEI? [y/N]` flow; `slot` is hardcoded to `1`. Hitting Enter aborts.
+
+Default-abort on both branches so a stray run can be aborted without writing anything; `live_patch.sh` is safe to use just to read the current IMEIs.
 
 ```bash
-read -p "  New IMEI (15 digits): " new_imei
+read -p "  New IMEI $slot (15 digits): " new_imei
 echo "$new_imei" | grep -qE '^[0-9]{15}$' || die "IMEI must be exactly 15 digits"
-echo "  Patching IMEI..."
-python3 "$TOOL" write "$BACKUP" "$new_imei" -o "$PATCHED" || die "Patch failed"
+echo "  Patching IMEI $slot..."
+python3 "$TOOL" write "$BACKUP" "$new_imei" -s "$slot" -o "$PATCHED" \
+    || die "Patch failed"
 push_replace "$PATCHED" LD0B_001 "$IMEI_PATH" system
 ```
 
-The regex check is a UX nicety — `imei_tool.py write` re-validates the same constraint. `push_replace`'s last arg `system` matches the original ownership (`root:system`, mode `0660`).
+The regex check is a UX nicety — `imei_tool.py write` re-validates the same constraint. The slot number is shown in the prompt (`New IMEI 1`, `New IMEI 2`) and passed through to `imei_tool.py write -s "$slot"`. `push_replace`'s last arg `system` matches the original ownership (`root:system`, mode `0660`).
 
 ```bash
 read -p "Reboot device now? [y/N] " ans

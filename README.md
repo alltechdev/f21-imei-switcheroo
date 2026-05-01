@@ -1,8 +1,8 @@
 # f21-imei-switcheroo
 
-Read and write the IMEI in the **DuoQin F21 Pro**'s NVRAM `LD0B_001` file (or in a full `nvdata` partition image dumped from one) — offline, no device needed.
+Read and write IMEI(s) in the NVRAM `LD0B_001` file on **DuoQin F21 Pro** (single-SIM) and **DuoQin F25** (dual-SIM) — or in a full `nvdata` partition image — offline, no device needed.
 
-> `live_patch.sh` is an interactive ADB script that patches a live rooted F21 Pro — see [Live device patching](#live-device-patching).
+> `live_patch.sh` is an interactive ADB script that patches a live rooted MTK device. On dual-SIM devices it prompts for slot 1 or 2 — see [Live device patching](#live-device-patching).
 
 ## Install
 
@@ -16,19 +16,24 @@ That's it. Then run `./live_patch.sh` for the interactive flow, or call `python3
 
 ## How it works
 
-The F21 Pro's modem firmware encrypts the IMEI in NVRAM using AES-128-ECB. The decrypted plaintext is a 32-byte block: BCD-encoded IMEI (8 bytes), a 2-byte filler at `[8:10]`, an 8-byte MD5-XOR checksum the modem validates on read, and 14 bytes of zero padding. The modem only validates the checksum — the 2-byte filler can be any value as long as the checksum is computed over it correctly. This tool reimplements the encryption and the checksum so it can rewrite the IMEI without touching the device.
+On MediaTek MT67xx devices (verified on F21 Pro and F25), the modem firmware encrypts each IMEI in NVRAM using AES-128-ECB. The decrypted plaintext is a 32-byte block: BCD-encoded IMEI (8 bytes), a 2-byte filler at `[8:10]`, an 8-byte MD5-XOR checksum the modem validates on read, and 14 bytes of zero padding. The modem only validates the checksum — the 2-byte filler can be any value as long as the checksum is computed over it correctly. Single-SIM units (F21 Pro) populate one slot at `[0x40:0x60]`; dual-SIM units (F25) populate a second at `[0x60:0x80]` with the same structure. This tool reimplements the encryption and the checksum so it can rewrite either IMEI without touching the device.
 
 The AES key is `3f06bd14d45fa985dd027410f0214d22` — pre-computed once from MTK's standard NVRAM seed via the `SST_Get_NVRAM_SW_Key` derivation (see [bkerler/mtkclient](https://github.com/bkerler/mtkclient) for the algorithm) and hardcoded as `AES_KEY`.
 
 ## Usage
 
 ```bash
-# Read the IMEI
+# Read both IMEI slots (single-SIM devices show slot 2 as `(empty)`)
 python3 imei_tool.py read LD0B_001
 python3 imei_tool.py read nvdata.img
 
-# Write a new IMEI
+# Write the first IMEI (default; the only slot used by the F21 Pro)
 python3 imei_tool.py write LD0B_001 350859600862948 -o LD0B_001_new
+
+# Write the second IMEI on dual-SIM devices (F25)
+python3 imei_tool.py write LD0B_001 350859600862948 -s 2 -o LD0B_001_new
+
+# Patch a full partition image
 python3 imei_tool.py write nvdata.img 350859600862948 -o nvdata_patched.img
 ```
 
@@ -43,13 +48,16 @@ The tool auto-detects whether the input is a standalone `LD0B_001` or a partitio
 
 ## Live device patching
 
-`live_patch.sh` patches a connected rooted F21 Pro in place: it pulls `/mnt/vendor/nvdata/md/NVRAM/NVD_IMEI/LD0B_001`, runs `imei_tool.py` to rewrite it, pushes it back, and offers to reboot. After reboot the new IMEI is live in the radio and visible to `service call iphonesubinfo`.
+`live_patch.sh` patches a connected rooted MTK device in place: it pulls `/mnt/vendor/nvdata/md/NVRAM/NVD_IMEI/LD0B_001`, runs `imei_tool.py` to rewrite it, pushes it back, and offers to reboot. The script counts populated slots in the read output and prompts accordingly — dual-SIM gets `Change which IMEI? [1/2/n]`, single-SIM gets `Change IMEI? [y/N]`. After reboot the new IMEI is live in the radio and visible to `service call iphonesubinfo`.
 
-End-to-end verified on the F21 Pro (Android 11) with random IMEIs via two paths:
-- `live_patch.sh` (push the patched file back through ADB), and
-- `fastboot flash nvdata` of a partition image patched by `imei_tool.py`.
+### Verification status
 
-In both cases the new IMEI persisted across reboot and showed up in `iphonesubinfo`.
+- **F21 Pro (Android 11), live device** — end-to-end verified with random IMEIs via both paths: `live_patch.sh` (push patched `LD0B_001` back through ADB) and `fastboot flash nvdata` of a partition image patched offline by `imei_tool.py`. Slot 1 patches persisted across reboot and appeared in `iphonesubinfo`. Slot 2 reads as `(empty)` on this single-SIM device.
+- **F25 (dual-SIM), firmware image only** — `imei_tool.py read`, `write -s 1`, and `write -s 2` exercised against `LD0B_001` extracted from the stock F25 firmware ZIP. Both slots decrypt cleanly with the same AES key, both produce modem-valid MD5-XOR checksums when re-encoded, and both round-trip through `encrypt → decrypt → BCD-decode`. **No F25 hardware was tested**; live-write and reboot behavior on F25 has not been confirmed.
+
+## Related
+
+- [`flipphoneguy/f21-imei-switcheroo-app`](https://github.com/flipphoneguy/f21-imei-switcheroo-app) — Java/Android port. Cross-verified bit-for-bit against `imei_tool.py`: same AES key, slot offsets `{0x40, 0x60}`, plaintext layout, and MD5-XOR checksum.
 
 ## Credits
 

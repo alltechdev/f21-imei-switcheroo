@@ -77,20 +77,33 @@ The function trusts its input is 15 numeric chars — `main()` validates first.
 
 Inverse. Walks the 8 bytes splitting each into low/high nibbles, stops at the first nibble > 9 (signals padding or invalid), and returns the assembled string only if it's exactly 15 chars long. Returns `None` otherwise — that's how callers detect "no IMEI here" (zero-filled or all-`0xFF` blocks both decode to `None`).
 
-## High-level read/write
+## Slot selection
 
-### `read_imei(ld0b_data)`
+### `_slot_offset(slot)`
 
 ```python
-pt = nvram_ecb_decrypt(ld0b_data[HEADER_SIZE:HEADER_SIZE + IMEI_BLOCK_SIZE])
+return HEADER_SIZE + (slot - 1) * IMEI_BLOCK_SIZE
+```
+
+Maps the user-facing slot number `1` or `2` to the byte offset within `LD0B_001`: slot 1 → `0x40`, slot 2 → `0x60`. Dies if `slot` is anything else. Every `read_imei` / `patch_imei` call routes through here, so per-slot logic stays in one place.
+
+The CLI is 1-indexed (`-s 1`, `-s 2`) for clarity at the prompt; internally each call still resolves to the same fixed offset that the stock modem firmware uses.
+
+## High-level read/write
+
+### `read_imei(ld0b_data, slot=1)`
+
+```python
+off = _slot_offset(slot)
+pt = nvram_ecb_decrypt(ld0b_data[off:off + IMEI_BLOCK_SIZE])
 return bcd_to_imei(pt[:IMEI_BCD_SIZE])
 ```
 
-Decrypt the IMEI block at `[0x40:0x60]`, decode the first 8 plaintext bytes as BCD. The other 24 bytes (filler / checksum / padding) are ignored on read.
+Decrypt the requested IMEI block (`[0x40:0x60]` for slot 1, `[0x60:0x80]` for slot 2), decode the first 8 plaintext bytes as BCD. The other 24 bytes (filler / checksum / padding) are ignored on read. Returns `None` on an unpopulated slot — the caller (`_print_both_imeis` or `live_patch.sh`) renders that as `(empty)`.
 
-### `patch_imei(ld0b_data, imei)`
+### `patch_imei(ld0b_data, imei, slot=1)`
 
-The write counterpart. Steps:
+The write counterpart. `slot=1` rewrites the block at `[0x40:0x60]`, `slot=2` rewrites the block at `[0x60:0x80]`; the other slot is untouched. Steps:
 
 1. Decrypt the existing IMEI block — preserves any unknown fields rather than starting from zeros.
 2. Overwrite `[0:8]` with the new BCD-encoded IMEI.
@@ -98,7 +111,7 @@ The write counterpart. Steps:
 4. Recompute the MD5-XOR checksum over `[0:10]`, write to `[10:18]`. *Without this the modem rejects the new IMEI.*
 5. Zero `[18:32]` (padding).
 6. Re-encrypt with `AES_KEY`.
-7. Splice back into `LD0B_001` at `[HEADER_SIZE : HEADER_SIZE + IMEI_BLOCK_SIZE]`; the surrounding header and post-block padding are untouched.
+7. Splice back into `LD0B_001` at the slot's offset (`0x40` or `0x60`); the other slot, the file header, and the trailing padding are untouched.
 
 Returns the full 384-byte patched `LD0B_001` as `bytes`.
 
@@ -128,15 +141,19 @@ ext4 keeps stale block contents around (journal, orphan inodes, COW remnants) an
 
 Returns 384 bytes for either input shape: scans via `_find_ld0b_raw` if the file is a partition image, otherwise reads directly and validates `len == 384` and `LD0B_MAGIC`. Dies on either failure. Used by `read` and the standalone-`LD0B_001` `write` path; the partition-image `write` path calls `_find_ld0b_raw` directly because it needs the offset.
 
+### `_print_both_imeis(ld0b_data)`
+
+Helper used by the `read` command and by the verify-after-write step inside `write`. Iterates `slot in (1, 2)` and prints `IMEI 1: <value>` / `IMEI 2: <value>` (or `(empty)` if `read_imei` returned `None`). Single-SIM devices like the F21 Pro will always show `IMEI 2: (empty)`; `live_patch.sh` uses that string to detect dual-SIM and adapt its prompt.
+
 ### `main()`
 
-Hand-rolled arg parsing — two subcommands and one optional flag (`-o output`), so `argparse` would be more setup than the loop costs.
+Hand-rolled arg parsing — two subcommands and two optional flags (`-o output`, `-s 1|2`), so `argparse` would be more setup than the loop costs. `-s` defaults to `1`; only values `1` and `2` are accepted (validated both at parse time and inside `_slot_offset`).
 
-**Read flow:** validate the file exists, call `read_imei(load_ld0b(filepath))`, print `IMEI: <value>` or `IMEI: (empty)` if `bcd_to_imei` returned `None`. The `(empty)` sentinel keeps `live_patch.sh`'s `awk` parser from crashing on uninitialised blocks.
+**Read flow:** validate the file exists, call `_print_both_imeis(load_ld0b(filepath))`. Output is two lines, one per slot, with `(empty)` for unpopulated slots. `live_patch.sh` parses this output by counting `(empty)` occurrences to decide between the dual-SIM and single-SIM prompt.
 
-**Write flow:** after validating the IMEI is 15 numeric digits, branch on `is_partition_image`. Standalone `LD0B_001` → call `patch_imei`, write, re-read to verify. Partition image → derive the default output name (`base_patched.ext` or `base.patched`), find the first `LD0B_001`, run `patch_imei`, run `_patch_all_copies` for the backups, write, re-scan to verify.
+**Write flow:** after validating the IMEI is 15 numeric digits, branch on `is_partition_image`. Standalone `LD0B_001` → call `patch_imei(..., slot=slot)`, write, re-read both slots to verify. Partition image → derive the default output name (`base_patched.ext` or `base.patched`), find the first `LD0B_001`, run `patch_imei` on the requested slot, run `_patch_all_copies` for the backups, write, re-scan and print both slots to verify.
 
-The verify-after-write line is the project's primary self-check: every `write` re-decrypts its own output and prints what it found. If AES, BCD, checksum, or partition patching is broken, the verified IMEI is wrong and the bug is immediately visible.
+The verify-after-write step is the project's primary self-check: every `write` re-decrypts its own output and prints both slots. If AES, BCD, checksum, partition patching, or slot routing is broken, the verified output is wrong and the bug is immediately visible.
 
 ## Partition-image mode
 
