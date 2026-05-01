@@ -30,13 +30,13 @@ adb shell su -c id </dev/null 2>/dev/null | grep -q "uid=0" \
 echo "Device is rooted, continuing..."
 
 echo "Reading current IMEIs from device..."
-adb exec-out su -c "cat $IMEI_PATH" > "$BACKUP" 2>/dev/null || die "Cannot read LD0B_001 from device"
+adb exec-out su -c "cat $IMEI_PATH" > "$BACKUP" || die "Cannot read $IMEI_PATH from device"
 
 file_size=$(wc -c < "$BACKUP")
 [ "$file_size" -eq 384 ] || die "LD0B_001 is $file_size bytes (expected 384) - pull may have corrupted the file"
 
 echo ""
-read_output=$(python3 "$TOOL" read "$BACKUP" 2>/dev/null) || die "Read failed"
+read_output=$(python3 "$TOOL" read "$BACKUP") || die "Read failed (imei_tool.py error above)"
 echo "$read_output" | sed 's/^/  /'
 echo ""
 
@@ -61,7 +61,7 @@ read -p "  New IMEI $slot (15 digits): " new_imei
 echo "$new_imei" | grep -qE '^[0-9]{15}$' || die "IMEI must be exactly 15 digits"
 echo "  Patching IMEI $slot..."
 python3 "$TOOL" write "$BACKUP" "$new_imei" -s "$slot" -o "$PATCHED" \
-    || die "Patch failed"
+    || die "Patch failed (imei_tool.py error above)"
 push_replace "$PATCHED" LD0B_001 "$IMEI_PATH" system
 echo "  IMEI $slot updated."
 

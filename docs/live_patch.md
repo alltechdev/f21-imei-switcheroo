@@ -77,16 +77,16 @@ adb shell su -c id </dev/null 2>/dev/null | grep -q "uid=0" \
 echo "Device is rooted, continuing..."
 ```
 
-Confirms an ADB device in the `device` state (not `unauthorized` / `recovery` / `offline`) and that `su -c id` returns `uid=0`. Without the second check, a non-rooted phone would reach the `cat $IMEI_PATH` and fail with a vague "Cannot read LD0B_001" instead of "no root." The chatty success line is intentional — confirms the precheck happened so a later silent failure isn't misread.
+Confirms an ADB device in the `device` state (not `unauthorized` / `recovery` / `offline`) and that `su -c id` returns `uid=0`. Without the second check, a non-rooted phone would reach the `cat $IMEI_PATH` and fail with a less-specific cat error instead of the explicit "must be rooted" message. The chatty success line is intentional — confirms the precheck happened so a later silent failure isn't misread.
 
 ## Pull current IMEI
 
 ```bash
-adb exec-out su -c "cat $IMEI_PATH" > "$BACKUP" 2>/dev/null \
-    || die "Cannot read LD0B_001 from device"
+adb exec-out su -c "cat $IMEI_PATH" > "$BACKUP" \
+    || die "Cannot read $IMEI_PATH from device"
 ```
 
-`adb exec-out` (not `adb shell`) is critical for binary transfers. `adb shell` allocates a PTY and applies CRLF translations that destroy binary blobs (any `\n` in the encrypted block becomes `\r\n`). `adb exec-out` pipes raw bytes.
+`adb exec-out` (not `adb shell`) is critical for binary transfers. `adb shell` allocates a PTY and applies CRLF translations that destroy binary blobs (any `\n` in the encrypted block becomes `\r\n`). `adb exec-out` pipes raw bytes. Stderr is *not* suppressed — if `cat` fails (e.g. wrong path on a non-F21 device), its specific error is shown above the script's own die message.
 
 ```bash
 file_size=$(wc -c < "$BACKUP")
@@ -96,7 +96,7 @@ file_size=$(wc -c < "$BACKUP")
 Defense in depth: validate the pull is exactly 384 bytes before feeding it to `imei_tool.py`.
 
 ```bash
-read_output=$(python3 "$TOOL" read "$BACKUP" 2>/dev/null) || die "Read failed"
+read_output=$(python3 "$TOOL" read "$BACKUP") || die "Read failed (imei_tool.py error above)"
 echo "$read_output" | sed 's/^/  /'
 echo ""
 
@@ -136,7 +136,7 @@ read -p "  New IMEI $slot (15 digits): " new_imei
 echo "$new_imei" | grep -qE '^[0-9]{15}$' || die "IMEI must be exactly 15 digits"
 echo "  Patching IMEI $slot..."
 python3 "$TOOL" write "$BACKUP" "$new_imei" -s "$slot" -o "$PATCHED" \
-    || die "Patch failed"
+    || die "Patch failed (imei_tool.py error above)"
 push_replace "$PATCHED" LD0B_001 "$IMEI_PATH" system
 ```
 
@@ -157,13 +157,14 @@ The IMEI is now in NVRAM, but the modem stack has the old value cached. Only a r
 |---|---|---|
 | `Error: No ADB device connected` | Phone unplugged, USB debugging off, or `adb` not in `PATH`. | Plug in, enable USB debugging, accept the host fingerprint. |
 | `Error: su -c failed: …` | Root prompt denied or phone isn't rooted. | Open Magisk → Superuser, allow root for the `shell` user. |
-| `Error: Cannot read LD0B_001 from device` | The path is wrong or unreadable. | Verify `IMEI_PATH` with `adb shell su -c "ls -la $IMEI_PATH"`. |
+| `Error: Cannot read <path> from device` | The path is wrong or unreadable. The `cat` error above the die line shows specifically why. | Verify with `adb shell su -c "ls -la $IMEI_PATH"`. |
 | `Error: LD0B_001 is N bytes (expected 384)` | Pull corrupted or wrong path. | Confirm path and re-run. |
+| `Error: Read failed (imei_tool.py error above)` | `imei_tool.py read` rejected the pulled file (wrong size, bad LDI magic, missing dependency, …). The exact reason is printed above by `imei_tool.py`. | Read the line above; common cases: pull was truncated, or `pycryptodome` not installed. |
 | `Error: IMEI must be exactly 15 digits` | Typo at the prompt. | Re-run. |
-| `Error: Patch failed` | `imei_tool.py write` failed (e.g. `pycryptodome` missing). | Run `python3 imei_tool.py read tmp/backup_LD0B_001.bin` manually to surface the underlying error. |
+| `Error: Patch failed (imei_tool.py error above)` | `imei_tool.py write` failed. The exact reason is printed above by `imei_tool.py`. | Read the line above; common cases: invalid IMEI, output dir not writable, `pycryptodome` not installed. |
 | `Error: cp LD0B_001 to … failed` | `/mnt/vendor/nvdata` mounted ro and both defensive remounts failed. | Inspect with `adb shell su -mm -c "mount | grep nvdata"`. |
 
-## Artefacts after a run
+## Artifacts after a run
 
 ```
 tmp/
