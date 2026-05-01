@@ -113,21 +113,25 @@ def _find_ld0b_raw(img):
         pos += 1
 
 
-def _patch_all_copies(img, sig, orig_header, header_len, patched_data, data_len):
-    offset = img.find(sig)
-    if offset == -1:
-        return 0
-    img[offset:offset + data_len] = patched_data
-    count = 1
-    pos = offset + data_len
+def _patch_all_copies(img, sig, header_len, slot, imei):
+    pos = 0
+    count = 0
+    first_header = None
     while True:
-        pos = img.find(sig, pos)
-        if pos == -1:
+        p = img.find(sig, pos)
+        if p == -1:
             break
-        if img[pos:pos + header_len] == orig_header:
-            img[pos:pos + data_len] = patched_data
+        if p + LD0B_SIZE > len(img):
+            pos = p + 1
+            continue
+        header = bytes(img[p:p + header_len])
+        if first_header is None:
+            first_header = header
+        if header == first_header:
+            ld0b = bytes(img[p:p + LD0B_SIZE])
+            img[p:p + LD0B_SIZE] = patch_imei(ld0b, imei, slot=slot)
             count += 1
-        pos += 1
+        pos = p + 1
     return count
 
 
@@ -217,13 +221,9 @@ def main():
         except (PermissionError, FileNotFoundError) as e:
             die(f"Cannot read {filepath}: {e}")
 
-        off, orig_ld0b = _find_ld0b_raw(img)
-        if off is None:
+        imei_count = _patch_all_copies(img, LD0B_SIG, HEADER_SIZE, slot, imei)
+        if imei_count == 0:
             die("LD0B_001 not found in partition image")
-        patched_ld0b = patch_imei(orig_ld0b, imei, slot=slot)
-        imei_count = _patch_all_copies(
-            img, LD0B_SIG, orig_ld0b[:HEADER_SIZE], HEADER_SIZE,
-            patched_ld0b, LD0B_SIZE)
 
         try:
             with open(output, 'wb') as f:
