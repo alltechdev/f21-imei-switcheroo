@@ -475,6 +475,56 @@ Every step above can be independently reproduced with:
 
 1. A rooted DuoQin F21 Pro
 2. The stock modem firmware (`md1img_a.bin`) unpacked with [md1imgpy](https://github.com/R0rt1z2/md1imgpy)
-3. `adb exec-out su -c "cat /mnt/vendor/nvdata/md/NVRAM/NVD_IMEI/LD0B_001"` to pull the encrypted file
+3. To pull the encrypted file (binary-safe on F21 Pro / Android 11 *and* later Android + Magisk setups where `su`'s stdio injects CRLF):
+   ```bash
+   adb shell su -c "cp /mnt/vendor/nvdata/md/NVRAM/NVD_IMEI/LD0B_001 /sdcard/LD0B_001 && chmod 644 /sdcard/LD0B_001"
+   adb pull /sdcard/LD0B_001
+   adb shell su -c "rm /sdcard/LD0B_001"
+   ```
+   The shorter `adb exec-out su -c "cat …" > LD0B_001` form works on F21 Pro / Android 11 but corrupts the pull on Android 13 / Magisk (see [Hardware validation (TIQ M5)](#hardware-validation-tiq-m5-dual-sim) below for the byte-level evidence).
 4. Python 3.6+ with `pycryptodome` and `hashlib` (stdlib) to decrypt and test checksum hypotheses
 5. `adb reboot` to verify the modem accepts or rejects the written IMEI
+
+## Cross-device validation (F25, firmware-only)
+
+The walkthrough above was conducted on a live F21 Pro (single-SIM). The same key, slot offsets, and checksum were independently re-validated against a stock **DuoQin F25** (dual-SIM) firmware ZIP — no F25 hardware was used.
+
+### What was checked against the F25 firmware
+
+1. **Locate `LD0B_001` in the F25 nvdata image.** Unzip the F25 firmware, scan `nvdata.bin` for the `LDI\x00\x10\xef\x0a\x00` signature. Three copies are present: two byte-identical live copies (one active, one ext4 leftover sharing the same 0x40-byte header) and a distinct **factory backup** at offset `0x1c04000`. The backup has different IMEIs from the live copies, header bytes `[0x2a:0x2c]` differ (`0x68 0x10` live vs `0x37 0xf9` backup — likely a sequence/version field), and both backup slots carry their own valid checksums.
+
+2. **Same AES key.** `AES.new(0x3f06bd14d45fa985dd027410f0214d22, ECB).decrypt(...)` on both 32-byte slots of the F25 live `LD0B_001` produces well-formed plaintext: BCD-encoded 15-digit IMEIs at `[0:8]` of each slot, a 2-byte filler at `[8:10]` (`00 00` on the live copy, `FF FF` on the factory backup — both round-trip cleanly because the checksum is computed over whichever bytes are present), and a checksum at `[10:18]` that matches MD5-XOR over `pt[0:10]` byte-for-byte.
+
+3. **Both slots populated.** Unlike the F21 Pro (single-SIM, slot 2 = all-zero / all-`0xFF`), the F25 has *both* slots holding real IMEIs. The two IMEIs differ — confirming MTK uses one slot per SIM rather than mirroring.
+
+4. **Round-trip through `imei_tool.py`.** `imei_tool.py write nvdata.bin <new_imei> -s 1` and `-s 2` against the F25 image: read-back via `imei_tool.py read` returns the new IMEIs in the corresponding slots, the other slot's bytes are byte-identical to the original, and `_patch_all_copies` updates the two header-matching live copies while leaving the factory backup at `0x1c04000` alone (its differing `[0x2a:0x2c]` header bytes cause the header-equality matcher to skip it — by analogy with the F21 Pro's factory-rollback handler this is desirable, but rollback behavior on F25 itself has not been observed).
+
+### What was *not* checked
+
+- **No live F25 hardware.** No `adb`/`fastboot`/reboot test was performed on a real F25.
+- **No bad-checksum behavior on F25.** The modem-side rollback-vs-ECC-mode response confirmed on the F21 Pro (Step 3 cases 2 and 3 above) has not been observed on F25.
+- **No cross-validation against any other dual-SIM MT67xx device.** Only F25 was checked.
+
+The cross-device evidence is strong enough to say `imei_tool.py -s 2` produces modem-acceptable bytes for the F25 *firmware* layout. Whether the F25 modem's runtime actually accepts a patched dual-SIM `LD0B_001` and brings the radio up has not been tested directly on F25 hardware; the closest hardware evidence is F21 Pro slot 1 (single-SIM) and TIQ M5 both slots (dual-SIM, see next section), where the same crypto / format / checksum produce modem-acceptable bytes that survive boot.
+
+## Hardware validation (TIQ M5, dual-SIM)
+
+Independent end-to-end confirmation on a live **TIQ M5** (MT6761, dual-SIM):
+
+1. **Firmware-level checks.** Same NVRAM crypto framework as F21 Pro / F25: `SST_secure_exp.c`, `nvram_sec.c`, `custom_nvram_sec.c` source-path strings present in the modem binary; the same standard MTK `NVRAM_SEED` / `KEY_CONST` / `SECOND_SEED` constants present at MT6761-specific offsets in `md1img-verified.img`; same `Z:\NVRAM\NVD_IMEI` IMEI path; same `SBP_IMEI_VERIFY_FAIL_ENTER_ECC_MODE` / `SBP_IMEI_LOCK_SUPPORT` symbols; modem built with `GEMINI_PLUS=2` (dual-SIM).
+
+2. **Decryption check.** Pulled `nvdata.bin` from a live device via [mtkclient](https://github.com/bkerler/mtkclient). Four LD0B_001 copies present: three byte-identical 384-byte bodies at offsets `0x1202000` / `0x180414e` / `0x2e0314e` plus one distinct body at `0x100214e` whose slot 1 IMEI differs from the others (slot 2 IMEI is the same across all four). All four copies share an identical 0x40-byte header. All four decrypt cleanly with `3f06bd14d45fa985dd027410f0214d22`; all eight slot blocks (4 copies × 2 slots) carry valid MD5-XOR checksums over `pt[0:10]`; all fillers are `00 00` (stock convention). Which of the byte-identical trio is the live ext4 filesystem block versus journal/COW leftovers wasn't determined — the patching strategy doesn't depend on knowing.
+
+3. **Bug surfaced and fixed.** Unlike F25 — where the factory backup's header bytes `[0x2a:0x2c]` differ from the live copies and the `_patch_all_copies` header-equality gate correctly excludes it — TIQ M5's four copies share a byte-identical 0x40-byte header. The original `_patch_all_copies` blasted the patched-first-copy's 384 bytes onto every header-matching copy, which on TIQ M5 corrupted the live copies' slot 1 (overwriting it with the distinct copy's slot 1 IMEI). The fix patches each copy in place — only the requested slot's 32-byte ciphertext is rewritten per copy. F21 Pro (15-copy real partition image) and F25 (firmware image) produce byte-identical output before and after the fix because their multi-copy scenarios never had body-differing same-header copies; TIQ M5 only works correctly after.
+
+4. **Live hardware test.** Built a test `nvdata.bin` by chain-patching slot 1 then slot 2 to a single test IMEI (`123456789012345`); per-copy verification confirmed all 4 copies had both slots = the test IMEI with valid MD5-XOR checksums and zero padding intact. Flashed back via mtkclient, booted the device. Both IMEIs read as `123456789012345` on-device — confirming the modem accepts patched bytes at runtime, both slots are independently patchable, and the AES key + slot offsets + format + checksum + BCD encoding are all correct on TIQ M5.
+
+5. **`live_patch.sh` end-to-end (rooted-ADB flow).** Two consecutive runs on the same device, each followed by a reboot:
+   - Run 1: dual-SIM `[1/2/n]` prompt → choose slot 2 → patch slot 2 to a fresh test IMEI. Post-script: slot 1 byte-identical to its pre-script value (per-copy preservation verified — only the slot-2 ciphertext block changed), slot 2 = the new IMEI. Post-reboot: file md5 byte-identical to script's `tmp/patched_LD0B_001.bin` (modem persists, no rollback).
+   - Run 2: same prompt → choose slot 1 → patch slot 1 to a fresh test IMEI. Post-script: slot 2 byte-identical to its run-1-patched value (the previously-patched slot is preserved across this run), slot 1 = the new IMEI. Post-reboot: file md5 byte-identical to script's patched file again.
+   - **Observation that drove a script change:** the original pull (`adb exec-out su -c "cat $IMEI_PATH" > backup`) returned 387 bytes on this device's Android 13 + Magisk combo. Every byte with value `0x0a` in the file appeared as `0x0d 0x0a` in the pull — for example the source file's first 8 bytes are `4c 44 49 00 10 ef 0a 00` ("LDI" header), which were pulled back as `4c 44 49 00 10 ef 0d 0a 00`. The script's defense-in-depth size check (`wc -c == 384`) correctly rejected it. Pull was switched to `cp via su` to `/sdcard` + `adb pull` (SYNC-protocol-based, binary-safe by construction); same script then verified end-to-end on both TIQ M5 / Android 13 *and* F21 Pro / Android 11 + Magisk in the same session.
+
+### What is *not* yet checked on TIQ M5
+
+- **Bad-checksum / factory-rollback behavior** — only valid patched bytes have been flashed; the F21 Pro–style rollback handler hasn't been exercised on TIQ M5.
+- **Which layer injects the CRLF** — observed empirically (Android 13 + Magisk on TIQ M5: yes; Android 11 + Magisk on F21 Pro: no). The exact culprit (Magisk's `su` stdio, `adb` daemon, kernel PTY allocation) wasn't isolated; the cp + adb-pull approach sidesteps it regardless.

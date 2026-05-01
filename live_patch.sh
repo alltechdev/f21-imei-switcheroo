@@ -1,5 +1,4 @@
 #!/bin/bash
-# Interactive IMEI changer for the rooted DuoQin F21 Pro via ADB.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TOOL="$SCRIPT_DIR/imei_tool.py"
@@ -30,30 +29,46 @@ adb shell su -c id </dev/null 2>/dev/null | grep -q "uid=0" \
     || die "su -c failed: device must be rooted and root must be granted to adb shell"
 echo "Device is rooted, continuing..."
 
-echo "Reading current IMEI from device..."
-adb exec-out su -c "cat $IMEI_PATH" > "$BACKUP" 2>/dev/null || die "Cannot read LD0B_001 from device"
+echo "Reading current IMEIs from device..."
+PULL_STAGE=/sdcard/LD0B_001_pull
+adb shell su -c "cp $IMEI_PATH $PULL_STAGE && chmod 644 $PULL_STAGE" </dev/null \
+    || die "Cannot stage $IMEI_PATH at $PULL_STAGE"
+adb pull "$PULL_STAGE" "$BACKUP" >/dev/null 2>&1 \
+    || die "adb pull of $PULL_STAGE failed"
+adb shell su -c "rm $PULL_STAGE" </dev/null >/dev/null 2>&1
 
 file_size=$(wc -c < "$BACKUP")
 [ "$file_size" -eq 384 ] || die "LD0B_001 is $file_size bytes (expected 384) - pull may have corrupted the file"
 
-current_imei=$(python3 "$TOOL" read "$BACKUP" 2>/dev/null | grep "IMEI:" | awk '{print $2}')
-
 echo ""
-echo "  Current IMEI: ${current_imei:-(empty)}"
+read_output=$(python3 "$TOOL" read "$BACKUP") || die "Read failed (imei_tool.py error above)"
+echo "$read_output" | sed 's/^/  /'
 echo ""
 
-read -p "Change IMEI? [y/N] " ans
-if [ "$ans" != "y" ] && [ "$ans" != "Y" ]; then
-    echo "No changes made."
-    exit 0
+populated=$(echo "$read_output" | grep -cv '(empty)')
+
+if [ "$populated" -ge 2 ]; then
+    read -p "Change which IMEI? [1/2/n] " choice
+    case "$choice" in
+        1|2) slot="$choice" ;;
+        *) echo "No changes made."; exit 0 ;;
+    esac
+else
+    slot=1
+    read -p "Change IMEI? [y/N] " ans
+    case "$ans" in
+        y|Y) ;;
+        *) echo "No changes made."; exit 0 ;;
+    esac
 fi
 
-read -p "  New IMEI (15 digits): " new_imei
+read -p "  New IMEI $slot (15 digits): " new_imei
 echo "$new_imei" | grep -qE '^[0-9]{15}$' || die "IMEI must be exactly 15 digits"
-echo "  Patching IMEI..."
-python3 "$TOOL" write "$BACKUP" "$new_imei" -o "$PATCHED" || die "Patch failed"
+echo "  Patching IMEI $slot..."
+python3 "$TOOL" write "$BACKUP" "$new_imei" -s "$slot" -o "$PATCHED" \
+    || die "Patch failed (imei_tool.py error above)"
 push_replace "$PATCHED" LD0B_001 "$IMEI_PATH" system
-echo "  IMEI updated."
+echo "  IMEI $slot updated."
 
 echo ""
 read -p "Reboot device now? [y/N] " ans

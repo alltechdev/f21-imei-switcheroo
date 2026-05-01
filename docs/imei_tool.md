@@ -77,20 +77,33 @@ The function trusts its input is 15 numeric chars — `main()` validates first.
 
 Inverse. Walks the 8 bytes splitting each into low/high nibbles, stops at the first nibble > 9 (signals padding or invalid), and returns the assembled string only if it's exactly 15 chars long. Returns `None` otherwise — that's how callers detect "no IMEI here" (zero-filled or all-`0xFF` blocks both decode to `None`).
 
-## High-level read/write
+## Slot selection
 
-### `read_imei(ld0b_data)`
+### `_slot_offset(slot)`
 
 ```python
-pt = nvram_ecb_decrypt(ld0b_data[HEADER_SIZE:HEADER_SIZE + IMEI_BLOCK_SIZE])
+return HEADER_SIZE + (slot - 1) * IMEI_BLOCK_SIZE
+```
+
+Maps the user-facing slot number `1` or `2` to the byte offset within `LD0B_001`: slot 1 → `0x40`, slot 2 → `0x60`. Dies if `slot` is anything else. Every `read_imei` / `patch_imei` call routes through here, so per-slot logic stays in one place.
+
+The CLI is 1-indexed (`-s 1`, `-s 2`) for clarity at the prompt; internally each call still resolves to the same fixed offset that the stock modem firmware uses.
+
+## High-level read/write
+
+### `read_imei(ld0b_data, slot=1)`
+
+```python
+off = _slot_offset(slot)
+pt = nvram_ecb_decrypt(ld0b_data[off:off + IMEI_BLOCK_SIZE])
 return bcd_to_imei(pt[:IMEI_BCD_SIZE])
 ```
 
-Decrypt the IMEI block at `[0x40:0x60]`, decode the first 8 plaintext bytes as BCD. The other 24 bytes (filler / checksum / padding) are ignored on read.
+Decrypt the requested IMEI block (`[0x40:0x60]` for slot 1, `[0x60:0x80]` for slot 2), decode the first 8 plaintext bytes as BCD. The other 24 bytes (filler / checksum / padding) are ignored on read. Returns `None` on an unpopulated slot — `_print_both_imeis` is what turns that into the `(empty)` string in the printed output, which `live_patch.sh` then searches for to detect single-vs-dual-SIM.
 
-### `patch_imei(ld0b_data, imei)`
+### `patch_imei(ld0b_data, imei, slot=1)`
 
-The write counterpart. Steps:
+The write counterpart. `slot=1` rewrites the block at `[0x40:0x60]`, `slot=2` rewrites the block at `[0x60:0x80]`; the other slot is untouched. Steps:
 
 1. Decrypt the existing IMEI block — preserves any unknown fields rather than starting from zeros.
 2. Overwrite `[0:8]` with the new BCD-encoded IMEI.
@@ -98,7 +111,7 @@ The write counterpart. Steps:
 4. Recompute the MD5-XOR checksum over `[0:10]`, write to `[10:18]`. *Without this the modem rejects the new IMEI.*
 5. Zero `[18:32]` (padding).
 6. Re-encrypt with `AES_KEY`.
-7. Splice back into `LD0B_001` at `[HEADER_SIZE : HEADER_SIZE + IMEI_BLOCK_SIZE]`; the surrounding header and post-block padding are untouched.
+7. Splice back into `LD0B_001` at the slot's offset (`0x40` or `0x60`); the other slot, the file header, and the trailing padding are untouched.
 
 Returns the full 384-byte patched `LD0B_001` as `bytes`.
 
@@ -108,11 +121,13 @@ Returns the full 384-byte patched `LD0B_001` as `bytes`.
 
 Returns `(offset, copy)` for the first `LD0B_SIG` followed by ≥`LD0B_SIZE` more bytes; `(None, None)` if no match. Locates `LD0B_001` inside a multi-MB partition image without mounting the ext4 filesystem; the 8-byte signature makes false positives effectively zero.
 
-### `_patch_all_copies(img, sig, orig_header, header_len, patched_data, data_len)`
+### `_patch_all_copies(img, sig, header_len, slot, imei)`
 
-Walks `img` and overwrites every `sig` match whose first `header_len` bytes equal `orig_header`. Returns the count.
+Walks `img` for every `sig` match. The first match's `header_len`-byte header sets the equality gate — only matches whose first `header_len` bytes equal that header get patched. Each gated match is patched **in place**: the 32-byte ciphertext at the slot's offset *within that copy* is decrypted, the new IMEI/checksum/padding written, re-encrypted, and spliced back. The rest of each copy (header, the *other* slot's ciphertext, trailing padding) is preserved per-copy. Returns the count of patched copies. Truncated finds at the very end of the image (less than `LD0B_SIZE` bytes available) are skipped.
 
 ext4 keeps stale block contents around (journal, orphan inodes, COW remnants) and `LD0B_001` is small enough that historical versions persist as fragments. We've observed up to 15 copies in a single dumped nvdata image. The modem reads through the live filesystem, but updating every copy is cheap insurance against a post-flash fsck/journal-replay re-surfacing a stale one.
+
+The per-copy in-place semantic matters when same-header copies have different bodies. On the F21 Pro partition image all 15 copies have byte-identical bodies (slot 1 = the device's IMEI, slot 2 = empty) so blast-replace and per-copy in-place produce the same output. On the F25 partition image the factory backup has a *different* header so the equality gate excludes it from patching. On the TIQ M5 partition image four copies share an identical 0x40-byte header but the bodies differ — three byte-identical bodies plus one distinct body whose slot 1 IMEI differs — and patching the requested slot in place is what stops the byte-identical trio's un-targeted slot from being clobbered with the distinct copy's value.
 
 ## CLI plumbing
 
@@ -128,23 +143,30 @@ ext4 keeps stale block contents around (journal, orphan inodes, COW remnants) an
 
 Returns 384 bytes for either input shape: scans via `_find_ld0b_raw` if the file is a partition image, otherwise reads directly and validates `len == 384` and `LD0B_MAGIC`. Dies on either failure. Used by `read` and the standalone-`LD0B_001` `write` path; the partition-image `write` path calls `_find_ld0b_raw` directly because it needs the offset.
 
+### `_print_both_imeis(ld0b_data)`
+
+Helper used by the `read` command and by the verify-after-write step inside `write`. Iterates `slot in (1, 2)` and prints `IMEI 1: <value>` / `IMEI 2: <value>` (or `(empty)` if `read_imei` returned `None`). Single-SIM devices like the F21 Pro will always show `IMEI 2: (empty)`; `live_patch.sh` uses that string to detect dual-SIM and adapt its prompt.
+
 ### `main()`
 
-Hand-rolled arg parsing — two subcommands and one optional flag (`-o output`), so `argparse` would be more setup than the loop costs.
+Hand-rolled arg parsing — two subcommands and two optional flags (`-o output`, `-s 1|2`), so `argparse` would be more setup than the loop costs. `-s` defaults to `1`; only values `1` and `2` are accepted (validated both at parse time and inside `_slot_offset`).
 
-**Read flow:** validate the file exists, call `read_imei(load_ld0b(filepath))`, print `IMEI: <value>` or `IMEI: (empty)` if `bcd_to_imei` returned `None`. The `(empty)` sentinel keeps `live_patch.sh`'s `awk` parser from crashing on uninitialised blocks.
+**Read flow:** validate the file exists, call `_print_both_imeis(load_ld0b(filepath))`. Output is two lines, one per slot, with `(empty)` for unpopulated slots. `live_patch.sh` parses this output by counting `(empty)` occurrences to decide between the dual-SIM and single-SIM prompt.
 
-**Write flow:** after validating the IMEI is 15 numeric digits, branch on `is_partition_image`. Standalone `LD0B_001` → call `patch_imei`, write, re-read to verify. Partition image → derive the default output name (`base_patched.ext` or `base.patched`), find the first `LD0B_001`, run `patch_imei`, run `_patch_all_copies` for the backups, write, re-scan to verify.
+**Write flow:** after validating the IMEI is 15 numeric digits, branch on `is_partition_image`. Standalone `LD0B_001` → call `patch_imei(..., slot=slot)`, write, re-read both slots to verify. Partition image → derive the default output name (`base_patched.ext` or `base.patched`), find the first `LD0B_001`, run `patch_imei` on the requested slot, run `_patch_all_copies` for the backups, write, re-scan and print both slots to verify.
 
-The verify-after-write line is the project's primary self-check: every `write` re-decrypts its own output and prints what it found. If AES, BCD, checksum, or partition patching is broken, the verified IMEI is wrong and the bug is immediately visible.
+The verify-after-write step is the project's primary self-check: every `write` re-decrypts its own output and prints both slots. If AES, BCD, checksum, partition patching, or slot routing is broken, the verified output is wrong and the bug is immediately visible.
 
 ## Partition-image mode
 
-End-to-end recipe when you have a full nvdata partition dump (live `dd` from a rooted device, or extracted from a stock ROM image):
+End-to-end recipe when you have a full nvdata partition dump (live dump from a rooted device, or extracted from a stock ROM image):
 
 ```bash
-# Dump
-adb exec-out su -c "dd if=/dev/block/by-name/nvdata bs=1M 2>/dev/null" > nvdata.img
+# Dump (binary-safe across all verified Android versions: cp via su to /sdcard,
+# then adb pull which uses adb's SYNC protocol)
+adb shell su -c "dd if=/dev/block/by-name/nvdata of=/sdcard/nvdata.img bs=1M && chmod 644 /sdcard/nvdata.img"
+adb pull /sdcard/nvdata.img
+adb shell su -c "rm /sdcard/nvdata.img"
 
 # Patch
 python3 imei_tool.py write nvdata.img 350859600862948 -o nvdata_patched.img
@@ -155,4 +177,6 @@ fastboot flash nvdata nvdata_patched.img
 fastboot reboot
 ```
 
-`_patch_all_copies` ensures every `LD0B_001` copy in the image — live, journal, backup — agrees on the new IMEI. End-to-end verified on the F21 Pro.
+A simpler `adb exec-out su -c "dd if=/dev/block/by-name/nvdata bs=1M" > nvdata.img` works on F21 Pro / Android 11 but will produce a corrupted image on devices where the `su` stdio path injects CRLF translation (observed on TIQ M5 / Android 13 + Magisk — see [`live_patch.sh`'s pull section](live_patch.md#pull-current-imei) for the same issue's resolution). The `cp via su /sdcard + adb pull` form sidesteps it.
+
+`_patch_all_copies` patches every header-matching `LD0B_001` copy in the image (live + ext4 journal/COW leftovers) in place — each copy's requested slot becomes the new IMEI while its other slot is preserved per-copy. Distinct copies whose 0x40-byte header differs (e.g. F25's factory backup) are intentionally skipped. End-to-end verified on the F21 Pro (slot 1) via `fastboot flash` and on the TIQ M5 (both slots) via mtkclient flash + boot. Both verifications used the binary-safe `cp via su + adb pull` dump form for the *initial* device → host transfer.
