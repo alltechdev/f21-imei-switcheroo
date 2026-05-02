@@ -2,7 +2,7 @@
 
 Read and write IMEI(s) in the NVRAM `LD0B_001` file on **DuoQin F21 Pro** (single-SIM), **DuoQin F25** (dual-SIM), and **TIQ M5** (dual-SIM, MT6761) — or in a full `nvdata` partition image — offline, no device needed.
 
-> `live_patch.sh` is an interactive ADB script that patches a live rooted MTK device. On dual-SIM devices it prompts for slot 1 or 2 — see [Live device patching](#live-device-patching).
+> `live_patch.sh` is an interactive ADB script that patches a live rooted MTK device. On dual-SIM devices it prompts for slot 1 or 2 — see [Live device patching](#live-device-patching). `termux_patch.sh` does the same thing on-device from Termux, no host PC required — see [On-device patching (Termux)](#on-device-patching-termux).
 
 ## Install
 
@@ -12,7 +12,7 @@ cd mtk-imei-switcheroo
 pip install pycryptodome
 ```
 
-That's it. Then run `./live_patch.sh` for the interactive flow, or call `python3 imei_tool.py` directly. Needs Python 3.6+; for live patching you also need `adb` (and `fastboot` if you'd rather flash the partition image).
+That's it. Then run `./live_patch.sh` for the interactive flow, or call `python3 imei_tool.py` directly. Needs Python 3.6+; for live patching you also need `adb` (and `fastboot` if you'd rather flash the partition image). To patch from the device itself instead of a host PC, run `./termux_patch.sh` from Termux — it auto-installs `python` and `pycryptodome` on first run if missing.
 
 ## How it works
 
@@ -59,6 +59,10 @@ The tool auto-detects whether the input is a standalone `LD0B_001` or a partitio
 ## Related
 
 - [`flipphoneguy/f21-imei-switcheroo-app`](https://github.com/flipphoneguy/f21-imei-switcheroo-app) — Java/Android port. Cross-verified bit-for-bit against `imei_tool.py`: same AES key, slot offsets `{0x40, 0x60}`, plaintext layout, and MD5-XOR checksum.
+
+## On-device patching (Termux)
+
+`termux_patch.sh` is the same flow as `live_patch.sh` but runs entirely on the device from Termux — no host PC, no ADB. It checks for `python` and `pycryptodome` (offers to `pkg install` / `pip install` if missing), reads `LD0B_001` directly via `su -c`, runs `imei_tool.py` to rewrite it, copies it back into place, and offers to reboot. Like `live_patch.sh`, it counts populated slots and prompts `[1/2/n]` on dual-SIM or `[y/N]` on single-SIM. Termux must be granted root (Magisk → Superuser → allow Termux).
 
 ## Credits
 
