@@ -93,6 +93,8 @@ The trailer-byte algorithm (the only non-trivial piece) was recovered by disasse
 
 **Live-device verification** is currently F21 Pro only. TIQ M5 and F25 hardware patching has not been exercised end-to-end (no device runs of `live_patch_mac.sh` and no fastboot flash on those devices yet); per the project rule on per-device verification, treat live-device patching on TIQ M5 / F25 as unverified until each is run on hardware. The offline-tool side of the pipeline is uniformly covered.
 
+> ⚠ Modifying an IMEI, Bluetooth, or WiFi MAC is illegal in some jurisdictions. You are responsible for checking your local laws and using this tool accordingly.
+
 ## Related
 
 - [`flipphoneguy/mtk-imei-switcheroo-app`](https://github.com/flipphoneguy/mtk-imei-switcheroo-app) — Java/Android port. Cross-verified bit-for-bit against this repo's tools:
