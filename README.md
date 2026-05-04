@@ -95,7 +95,9 @@ The trailer-byte algorithm (the only non-trivial piece) was recovered by disasse
 
 ## Related
 
-- [`flipphoneguy/f21-imei-switcheroo-app`](https://github.com/flipphoneguy/f21-imei-switcheroo-app) — Java/Android port. Cross-verified bit-for-bit against `imei_tool.py`: same AES key, slot offsets `{0x40, 0x60}`, plaintext layout, and MD5-XOR checksum.
+- [`flipphoneguy/mtk-imei-switcheroo-app`](https://github.com/flipphoneguy/mtk-imei-switcheroo-app) — Java/Android port. Cross-verified bit-for-bit against this repo's tools:
+  - **IMEI side** (against `imei_tool.py`): same AES key, slot offsets `{0x40, 0x60}`, plaintext layout, and MD5-XOR checksum.
+  - **BT MAC + WiFi MAC side** (v1.0.5, against `mac_tool.py`): `MacCrypto.computeChecksum` is a direct Java port of `mac_tool.compute_checksum`. Verified equivalent on real partition samples — F21 Pro live + stock, F25, TIQ M5, F30 stock — every stored trailer byte computes the same on both implementations, and `patchBt` / `patchWifi` produce byte-identical output to `patch_bt` / `patch_wifi` for the same input. Their "supported device gate" is the trailer-checksum match itself, which transparently handles F25's `01 00 09 00` WIFI header without needing a header whitelist (because the patch path leaves the header untouched).
 
 ## Credits
 
