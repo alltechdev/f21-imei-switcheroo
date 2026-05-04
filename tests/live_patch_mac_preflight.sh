@@ -8,10 +8,22 @@ TOOL="$ROOT/mac_tool.py"
 SAMPLES="$ROOT/tmp/wifi_bt_re"
 FAKE="$(mktemp -d)"
 
+cleanup() {
+    [ -f "$TOOL.bak" ]  && mv "$TOOL.bak"  "$TOOL"
+    [ -f "$TOOL.real" ] && mv "$TOOL.real" "$TOOL"
+    rm -rf "$FAKE"
+}
+trap cleanup EXIT INT TERM
+
 [ -f "$SAMPLES/BT_Addr.bin" ] || { echo "missing $SAMPLES/BT_Addr.bin (pull a live BT_Addr first)"; exit 2; }
 [ -f "$SAMPLES/WIFI.bin" ]    || { echo "missing $SAMPLES/WIFI.bin (pull a live WIFI first)";    exit 2; }
 [ -f "$SCRIPT" ]              || { echo "missing $SCRIPT";  exit 2; }
 [ -f "$TOOL" ]                || { echo "missing $TOOL";    exit 2; }
+
+DEVICE_PRESENT=0
+if command -v adb >/dev/null 2>&1 && adb devices 2>/dev/null | awk 'NR>1 && $2=="device"' | grep -q .; then
+    DEVICE_PRESENT=1
+fi
 
 PYDIR="$(dirname "$(command -v python3)")"
 SYSPATH="$PYDIR:/usr/bin:/bin"
@@ -65,7 +77,7 @@ assert "python3 missing (adb present)" "Error: python3 not found in PATH" 1 "$FA
 mv "$TOOL" "$TOOL.bak"
 reset_artifacts
 "$SCRIPT" </dev/null >"$FAKE/o" 2>&1; rc=$?
-mv "$TOOL.bak" "$TOOL"
+mv "$TOOL.bak" "$TOOL" || true
 assert "mac_tool.py missing"  "Error: mac_tool.py not found" 1 "$FAKE/o" "$rc"
 
 echo ""
@@ -105,7 +117,7 @@ write_fake_adb 'case "$1" in
         joined="$*"
         if [[ "$joined" == *" id"* ]] && [[ "$joined" != *"BT_Addr"* && "$joined" != *"WIFI"* ]]; then
             echo "uid=0(root)"
-        elif [[ "$joined" == *"cp /mnt/vendor/nvdata"* ]] && [[ "$joined" == *"/sdcard/"* ]]; then
+        elif [[ "$joined" == *"/mnt/vendor/nvdata"* ]] && [[ "$joined" == *"/sdcard/"* ]]; then
             echo "cp: not found" >&2; exit 1
         else
             exit 0
@@ -156,7 +168,7 @@ write_fake_adb "case \"\$1\" in
     devices) echo \"List of devices attached\"; printf \"0123456789ABCDEF\tdevice\n\"; echo \"\" ;;
     shell)
         joined=\"\$*\"
-        if [[ \"\$joined\" == *\"cp /data/local/tmp\"* ]]; then
+        if [[ \"\$joined\" == *\"/data/local/tmp\"* ]] && [[ \"\$joined\" == *\"/mnt/vendor/nvdata\"* ]]; then
             echo \"cp: Read-only file system\" >&2; exit 1
         elif [[ \"\$joined\" == *\" id\"* ]] && [[ \"\$joined\" != *BT_Addr* && \"\$joined\" != *WIFI* ]]; then
             echo \"uid=0(root)\"
@@ -178,20 +190,21 @@ n
 '"
 assert "final cp fails (RO)"  "Error: cp /data/local/tmp/BT_Addr.new -> /mnt/vendor/nvdata/APCFG/APRDEB/BT_Addr failed" 1 "$FAKE/o" "$?"
 
-echo ""
-echo "== MAC-format prompt validation (real adb, real device) =="
-reset_artifacts
-printf 'y\nnot-a-mac\n' | "$SCRIPT" >"$FAKE/o" 2>&1
-assert "BT MAC bad"           "Error: BT MAC 'not-a-mac' is not six colon- or dash-separated" 1 "$FAKE/o" "$?"
+if [ "$DEVICE_PRESENT" -eq 1 ]; then
+    echo ""
+    echo "== MAC-format prompt validation (real adb, real device) =="
+    reset_artifacts
+    printf 'y\nnot-a-mac\n' | "$SCRIPT" >"$FAKE/o" 2>&1
+    assert "BT MAC bad"           "Error: BT MAC 'not-a-mac' is not six colon- or dash-separated" 1 "$FAKE/o" "$?"
 
-reset_artifacts
-printf 'n\ny\nbogus\n' | "$SCRIPT" >"$FAKE/o" 2>&1
-assert "WiFi MAC bad"         "Error: WiFi MAC 'bogus' is not six colon- or dash-separated" 1 "$FAKE/o" "$?"
+    reset_artifacts
+    printf 'n\ny\nbogus\n' | "$SCRIPT" >"$FAKE/o" 2>&1
+    assert "WiFi MAC bad"         "Error: WiFi MAC 'bogus' is not six colon- or dash-separated" 1 "$FAKE/o" "$?"
 
-echo ""
-echo "== mac_tool.py write failure (real device, mocked tool) =="
-mv "$TOOL" "$TOOL.real"
-cat > "$TOOL" <<'EOF'
+    echo ""
+    echo "== mac_tool.py write failure (real device, mocked tool) =="
+    mv "$TOOL" "$TOOL.real"
+    cat > "$TOOL" <<'EOF'
 #!/usr/bin/env python3
 import sys
 if sys.argv[1] == 'read':
@@ -200,14 +213,18 @@ if sys.argv[1] == 'read':
     sys.exit(0)
 print("Error: mocked mac_tool failure", file=sys.stderr); sys.exit(1)
 EOF
-chmod +x "$TOOL"
-reset_artifacts
-printf 'y\n02:11:22:33:44:55\n' | "$SCRIPT" >"$FAKE/o" 2>&1
-rc=$?
-mv "$TOOL.real" "$TOOL"
-assert "mac_tool write fails" "Error: BT_Addr patch failed" 1 "$FAKE/o" "$rc"
+    chmod +x "$TOOL"
+    reset_artifacts
+    printf 'y\n02:11:22:33:44:55\n' | "$SCRIPT" >"$FAKE/o" 2>&1
+    rc=$?
+    mv "$TOOL.real" "$TOOL"
+    assert "mac_tool write fails" "Error: BT_Addr patch failed" 1 "$FAKE/o" "$rc"
+else
+    echo ""
+    echo "== Skipping real-device cases (no ADB device in 'device' state) =="
+    echo "   To exercise: connect a rooted F21 Pro and re-run this driver."
+fi
 
 echo ""
 echo "== Total: $PASS pass / $FAIL fail =="
-rm -rf "$FAKE"
 [ "$FAIL" -eq 0 ] || exit 1

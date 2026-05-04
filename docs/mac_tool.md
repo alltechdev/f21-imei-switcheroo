@@ -118,7 +118,7 @@ WIFI MAC (1 copies, first @ 0x201f4): 10:df:8b:UU:VV:WW
 
 If `-o` is omitted, the default is `<base>_patched<ext>` (or `<file>.patched` for files without an extension).
 
-After every successful write, the tool re-reads the output file via `cmd_read` so the output ends with a self-verify line — same convention as `imei_tool.py`'s `_print_both_imeis`.
+After every successful write to a regular file the tool re-reads the output via `cmd_read` so the output ends with a self-verify line — same convention as `imei_tool.py`'s `_print_both_imeis`. When the output path is not a regular file (`/dev/null`, a character device, a named pipe), `cmd_read` would fail trying to size-check it, so the tool prints `(verify skipped: <path> is not a regular file)` instead and exits 0.
 
 ### Error surface
 
@@ -160,14 +160,16 @@ When `find_bt_copies` / `find_wifi_copies` find a signature hit but the trailer'
 ```bash
 python3 mac_tool.py read BT_Addr
 python3 mac_tool.py read WIFI
-python3 mac_tool.py read nvram.img
+python3 mac_tool.py read nvdata.img
 
 python3 mac_tool.py write BT_Addr --bt 02:11:22:33:44:55 -o BT_Addr.patched
 python3 mac_tool.py write WIFI    --wifi 02:11:22:33:44:66 -o WIFI.patched
 
-python3 mac_tool.py write nvram.img --bt 02:11:22:33:44:55 \
-                                    --wifi 02:11:22:33:44:66 \
-                                    -o nvram_patched.img
+python3 mac_tool.py write nvdata.img --bt 02:11:22:33:44:55 \
+                                     --wifi 02:11:22:33:44:66 \
+                                     -o nvdata_patched.img
 ```
+
+Use a freshly-pulled `nvdata.img` (`dd if=/dev/block/by-name/nvdata of=/sdcard/nvdata.img bs=1M` then `adb pull`) for the partition-image flow — that's the path verified end-to-end via `fastboot flash nvdata`. `nvram.img` (the `nvram` partition) also contains a single signature-matching record each, but flashing it isn't part of the verified offline path on this branch.
 
 For the live-device flow that wraps these calls (pull → patch → push → reboot → verify), see [`live_patch_mac.md`](live_patch_mac.md).

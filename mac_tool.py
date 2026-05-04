@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import stat
 import sys
 
 BT_FILE_SIZE = 440
@@ -10,10 +11,14 @@ BT_TRAILER_SIG = bytes.fromhex('60002310000007000000050703040000')
 BT_TRAILER_SIG_OFFSET = 0x06
 
 WIFI_HDR = bytes.fromhex('01000800')
-WIFI_HDR_OFFSET = 0x00
 WIFI_MAC_OFFSET = 0x04
 
 TRAILER_MAGIC = 0xAA
+
+
+def die(msg):
+    print(f"Error: {msg}", file=sys.stderr)
+    sys.exit(1)
 
 
 def parse_mac(s):
@@ -121,11 +126,6 @@ def is_partition_image(path):
     return sz > 1024 * 1024
 
 
-def die(msg):
-    print(f"Error: {msg}", file=sys.stderr)
-    sys.exit(1)
-
-
 def write_output(path, data):
     try:
         with open(path, 'wb') as f:
@@ -136,10 +136,14 @@ def write_output(path, data):
 
 def is_regular_file(path):
     try:
-        import stat
         return stat.S_ISREG(os.stat(path).st_mode)
     except OSError:
         return False
+
+
+def read_file(path):
+    with open(path, 'rb') as f:
+        return f.read()
 
 
 def cmd_read(args):
@@ -149,7 +153,7 @@ def cmd_read(args):
     if not os.path.exists(path):
         die(f"file not found: {path}")
     sz = os.path.getsize(path)
-    data = open(path, 'rb').read()
+    data = read_file(path)
     if is_partition_image(path):
         bts = find_bt_copies(data)
         wfs = find_wifi_copies(data)
@@ -214,7 +218,7 @@ def cmd_write(args):
     if not os.path.exists(in_path):
         die(f"file not found: {in_path}")
 
-    data = open(in_path, 'rb').read()
+    data = read_file(in_path)
     sz = len(data)
 
     if is_partition_image(in_path):

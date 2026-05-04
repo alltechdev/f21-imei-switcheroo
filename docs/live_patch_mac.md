@@ -57,44 +57,55 @@ Same as `live_patch.sh`.
 Stages a system-owned file at `/sdcard/<stage>` (so the `shell` ADB user can read it) and pulls it via the binary-safe `adb pull` SYNC protocol. Equivalent to the IMEI script's pull idiom.
 
 ```bash
-adb shell su -c "cp $src $stage && chmod 644 $stage" </dev/null \
-    || die "Cannot stage $src at $stage"
+adb shell su -c "cp '$src' '$stage' && chmod 644 '$stage'" </dev/null \
+    || die "Cannot stage $src at $stage. Verify the file exists: adb shell su -c 'ls -la $src'"
 adb pull "$stage" "$dest" >/dev/null 2>&1 \
-    || die "adb pull of $stage failed"
-adb shell su -c "rm $stage" </dev/null >/dev/null 2>&1
+    || die "adb pull of $stage to $dest failed. Try the pull manually: adb pull $stage"
+adb shell su -c "rm '$stage'" </dev/null >/dev/null 2>&1
 ```
 
-Why `adb pull` rather than `adb exec-out su -c "cat …"`: on Android 13 / Magisk combinations the latter injects `\r` before every `\n` in the binary stream (verified on TIQ M5 in the IMEI work). The `cp via su /sdcard + adb pull` form sidesteps this — `cp` writes the bytes to the filesystem directly, and `adb pull` uses adb's SYNC protocol, neither of which involve a PTY. Verified binary-safe on F21 Pro / Android 11 + Magisk in this script.
+Why `adb pull` rather than `adb exec-out su -c "cat …"`: on Android 13 / Magisk combinations the latter injects `\r` before every `\n` in the binary stream (verified on TIQ M5 in the IMEI work). The `cp via su /sdcard + adb pull` form sidesteps this — `cp` writes the bytes to the filesystem directly, and `adb pull` uses adb's SYNC protocol, neither of which involve a PTY. Verified binary-safe on F21 Pro / Android 11 + Magisk in this script. Each error message names what was tried and a follow-up diagnostic command.
 
 ### `push_replace(src, name, dest, group)`
 
 Replaces a destination file on the device with one we just pushed. Args are: host source, on-device staging name, final destination, `chown` group (`bluetooth` for `BT_Addr`, `system` for `WIFI`).
 
 ```bash
-adb push "$src" "$DEVICE_TMP/$name" </dev/null >/dev/null 2>&1
+adb push "$src" "$DEVICE_TMP/$name" </dev/null >/dev/null 2>&1 \
+    || die "adb push of $src to $DEVICE_TMP/$name failed. Is /data/local/tmp writable? Try: adb shell ls -ld /data/local/tmp"
 adb shell su -c "mount -o remount,rw /mnt/vendor/nvdata" </dev/null >/dev/null 2>&1
 adb shell su -c "mount -o remount,rw /" </dev/null >/dev/null 2>&1
-adb shell su -c "cp $DEVICE_TMP/$name $dest" </dev/null \
-    || die "cp $name to $dest failed"
-adb shell su -c "chmod 660 $dest" </dev/null >/dev/null 2>&1
-adb shell su -c "chown root:$group $dest" </dev/null >/dev/null 2>&1
-adb shell su -c "rm $DEVICE_TMP/$name" </dev/null >/dev/null 2>&1
+adb shell su -c "cp '$DEVICE_TMP/$name' '$dest'" </dev/null \
+    || die "cp $DEVICE_TMP/$name -> $dest failed. /mnt/vendor/nvdata may be read-only; check: adb shell su -mm -c 'mount | grep nvdata'"
+adb shell su -c "chmod 660 '$dest'" </dev/null >/dev/null 2>&1
+adb shell su -c "chown root:$group '$dest'" </dev/null >/dev/null 2>&1
+adb shell su -c "rm '$DEVICE_TMP/$name'" </dev/null >/dev/null 2>&1
 ```
 
-Same three-things-deliberate as `live_patch.sh`: `</dev/null` on every adb invocation (so piping the script's stdin through prompts doesn't get consumed by adb), defensive `mount -o remount,rw` for hypothetical Magisk/SELinux configurations that route writes through the root namespace, and separate `adb shell su -c` calls (chained `cp && chmod && chown && rm` was observed to fail in the IMEI work). Only `cp` dies on failure; chmod/chown/rm are best-effort.
+Same three-things-deliberate as `live_patch.sh`: `</dev/null` on every adb invocation (so piping the script's stdin through prompts doesn't get consumed by adb), defensive `mount -o remount,rw` for hypothetical Magisk/SELinux configurations that route writes through the root namespace, and separate `adb shell su -c` calls (chained `cp && chmod && chown && rm` was observed to fail in the IMEI work). Only `cp` dies on failure; chmod/chown/rm are best-effort. All on-device path arguments are single-quoted within the `su -c` string to keep the shell parsing predictable even though `BT_PATH` / `WIFI_PATH` / `DEVICE_TMP` have no whitespace.
 
 The mode `0660` and `chown root:<group>` match the original on-device ownership: `BT_Addr` is `root:bluetooth`, `WIFI` is `root:system`. The kernel and userspace consumers verify the mode at boot, so this matters even if the file content is otherwise correct.
 
 ## Preflight checks
 
 ```bash
-adb devices 2>/dev/null | grep -q "device$" || die "No ADB device connected"
+command -v adb >/dev/null 2>&1     || die "adb not found in PATH. Install Android platform-tools."
+command -v python3 >/dev/null 2>&1 || die "python3 not found in PATH. Install Python 3.6 or newer."
+[ -f "$TOOL" ]                     || die "mac_tool.py not found next to this script (expected at $TOOL)"
+
+adb_state=$(adb devices 2>/dev/null | awk 'NR>1 && NF{print $2}' | head -1)
+if [ -z "$adb_state" ]; then
+    die "No ADB device detected. Plug in the device and ensure USB debugging is enabled."
+elif [ "$adb_state" != "device" ]; then
+    die "ADB device is in state '$adb_state', not 'device'. Common fixes: …"
+fi
+
 adb shell su -c id </dev/null 2>/dev/null | grep -q "uid=0" \
-    || die "su -c failed: device must be rooted and root must be granted to adb shell"
+    || die "su -c id did not return uid=0. The device must be rooted and root must be granted to the 'shell' user. …"
 echo "Device is rooted, continuing..."
 ```
 
-Confirms a device in the `device` state (not `unauthorized` / `recovery` / `offline`) and that `su -c id` returns `uid=0`. Without the second check, a non-rooted phone would reach the pull step and fail with a less specific error.
+Five gates, in order: host has `adb`, host has `python3`, `mac_tool.py` is sitting next to the script (so the user didn't accidentally run a copy of `live_patch_mac.sh` without its dependency), an ADB device is present and in the `device` state (not `unauthorized` / `recovery` / `offline`), and `su -c id` returns `uid=0`. Each gate dies with a specific message naming the observed condition and the suggested fix; the messages are listed verbatim in the [Failure modes](#failure-modes) table below. Without the third and fourth gates, a missing `mac_tool.py` or an unauthorized device would surface much later as a cryptic Python or `adb pull` error.
 
 ## Pull current state
 
@@ -128,10 +139,10 @@ case "$ans" in
     y|Y)
         read -p "  New BT MAC (xx:xx:xx:xx:xx:xx): " new_bt
         echo "$new_bt" | grep -qiE '^[0-9a-f]{2}([:-][0-9a-f]{2}){5}$' \
-            || die "BT MAC must be six colon-separated hex bytes"
+            || die "BT MAC '$new_bt' is not six colon- or dash-separated hex bytes (e.g. 02:11:22:33:44:55)"
         echo "  Patching BT_Addr..."
         python3 "$TOOL" write "$BT_BACKUP" --bt "$new_bt" -o "$BT_PATCHED" \
-            || die "Patch failed (mac_tool.py error above)"
+            || die "BT_Addr patch failed — see mac_tool.py output above. The pulled backup is at $BT_BACKUP for inspection."
         push_replace "$BT_PATCHED" BT_Addr.new "$BT_PATH" bluetooth
         ;;
     *) echo "  BT_Addr unchanged." ;;
@@ -188,7 +199,7 @@ Every `die()` path has been triggered live and the resulting message captured. T
 | `BT_Addr unchanged. WIFI unchanged. No changes made.` (clean exit, no reboot prompt) | Both prompts answered `n` | Script exits 0 without offering reboot. |
 | Only BT patched (`tmp/patched_BT_Addr.bin` exists, `tmp/patched_WIFI.bin` does not) | First prompt `y`, second prompt `n` | The patched BT_Addr is pushed to the device; WIFI is left as it was. |
 | Only WiFi patched (`tmp/patched_WIFI.bin` exists, `tmp/patched_BT_Addr.bin` does not) | First prompt `n`, second prompt `y` | Mirror of the above. |
-| Both patched | Both prompts `y` | Both pushed. End-to-end reboot verification confirms both new MACs are live (BT via `settings get secure bluetooth_address`, WiFi via the patched file persisting and the kernel WiFi driver loading it on boot). |
+| Both patched | Both prompts `y` | Both pushed. End-to-end reboot verification confirms BT directly via `settings get secure bluetooth_address` (byte-matches `BT_Addr[0:6]`); WiFi indirectly via the WIFI file persisting across reboot byte-for-byte and the daemon's `NVM_CheckFile` not triggering rollback. Android's per-interface MAC randomization on `wlan0` and `p2p0` means there's no direct `wlan0/address`-level runtime read of the patched MAC on this Android version — the kernel WiFi driver does load the patched bytes (`wlan_assistant` is the documented consumer) but they're masked behind the netdev randomization layer. |
 
 ## Artifacts after a run
 

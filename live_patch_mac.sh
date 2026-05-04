@@ -25,20 +25,20 @@ push_replace() {
         || die "adb push of $src to $DEVICE_TMP/$name failed. Is /data/local/tmp writable? Try: adb shell ls -ld /data/local/tmp"
     adb shell su -c "mount -o remount,rw /mnt/vendor/nvdata" </dev/null >/dev/null 2>&1
     adb shell su -c "mount -o remount,rw /" </dev/null >/dev/null 2>&1
-    adb shell su -c "cp $DEVICE_TMP/$name $dest" </dev/null \
+    adb shell su -c "cp '$DEVICE_TMP/$name' '$dest'" </dev/null \
         || die "cp $DEVICE_TMP/$name -> $dest failed. /mnt/vendor/nvdata may be read-only; check: adb shell su -mm -c 'mount | grep nvdata'"
-    adb shell su -c "chmod 660 $dest" </dev/null >/dev/null 2>&1
-    adb shell su -c "chown root:$group $dest" </dev/null >/dev/null 2>&1
-    adb shell su -c "rm $DEVICE_TMP/$name" </dev/null >/dev/null 2>&1
+    adb shell su -c "chmod 660 '$dest'" </dev/null >/dev/null 2>&1
+    adb shell su -c "chown root:$group '$dest'" </dev/null >/dev/null 2>&1
+    adb shell su -c "rm '$DEVICE_TMP/$name'" </dev/null >/dev/null 2>&1
 }
 
 pull_to_host() {
     local src="$1" stage="$2" dest="$3"
-    adb shell su -c "cp $src $stage && chmod 644 $stage" </dev/null \
+    adb shell su -c "cp '$src' '$stage' && chmod 644 '$stage'" </dev/null \
         || die "Cannot stage $src at $stage. Verify the file exists: adb shell su -c 'ls -la $src'"
     adb pull "$stage" "$dest" >/dev/null 2>&1 \
         || die "adb pull of $stage to $dest failed. Try the pull manually: adb pull $stage"
-    adb shell su -c "rm $stage" </dev/null >/dev/null 2>&1
+    adb shell su -c "rm '$stage'" </dev/null >/dev/null 2>&1
 }
 
 adb_state=$(adb devices 2>/dev/null | awk 'NR>1 && NF{print $2}' | head -1)

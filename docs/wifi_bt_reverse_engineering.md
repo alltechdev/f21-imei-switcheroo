@@ -591,13 +591,29 @@ Pull commands use the binary-safe `cp via su /sdcard + adb pull` for filesystem 
 
 - **F21 Pro / Android 11 + Magisk, fastboot flash nvdata path** — verified separately with `02:aa:bb:cc:dd:ee` (BT) and `02:aa:bb:cc:dd:ff` (WiFi). Procedure: pull the live `nvdata` partition (`dd if=/dev/block/by-name/nvdata of=/sdcard/nvdata.img bs=1M` then `adb pull`), patch offline with `python3 mac_tool.py write nvdata.img --bt 02:aa:bb:cc:dd:ee --wifi 02:aa:bb:cc:dd:ff -o nvdata_patched.img` (which patches all 18 signature-matching copies — the live ext4 file blocks plus journal/COW remnants), then `adb reboot bootloader` → `fastboot flash nvdata nvdata_patched.img` → `fastboot reboot`. After boot, `mac_tool.py read` on the freshly-pulled `BT_Addr` and `WIFI` files reports `02:aa:bb:cc:dd:ee` and `02:aa:bb:cc:dd:ff` respectively, and `settings get secure bluetooth_address` returns `02:AA:BB:CC:DD:EE`. This confirms `mac_tool.py`'s partition-image mode produces an image whose live ext4 blocks are correctly patched and whose flashed-back state is consistent enough for the runtime daemon to accept it without invoking BinRegion restore.
 
-- **WiFi runtime byte-level confirmation (the WIFI side's analogue of `settings get secure bluetooth_address`)** — Android exposes `wlan0`'s MAC behind its per-SSID randomization layer, so `cat /sys/class/net/wlan0/address` is not a useful runtime check. The WiFi P2P interface `p2p0`, however, is brought up by `wpa_supplicant` directly from the chipset's permanent MAC (the bytes the kernel WiFi driver loaded out of the WIFI file via `wlan_assistant`'s init path), with no Android randomization in between. After a `live_patch_mac.sh` run that wrote `02:de:ad:be:ef:22` into `WIFI[4:10]`, the boot logcat shows:
+- **WiFi runtime byte-level confirmation** — Android randomizes `wlan0` per saved-network by default (`addr_assign_type=3`, `macRandomizationSetting: 1`), which masks the chipset's permanent MAC behind a per-SSID random one. To read the chipset's actual MAC at runtime, disable randomization on the active saved network and observe `wlan0/address` after re-associating. The supported user-facing path is Settings → Wi-Fi → network → Privacy → "Use device MAC". The same effect from the shell:
 
   ```
-  $ adb shell su -c 'logcat -d -b all 2>/dev/null | grep -E "p2p0: Own MAC"'
-  D wpa_supplicant: p2p0: Own MAC address: 02:de:ad:be:ef:22
+  $ adb shell su -c '
+      sed -i "s|<int name=\"MacRandomizationSetting\" value=\"1\" />|<int name=\"MacRandomizationSetting\" value=\"0\" />|" \
+        /data/misc/apexdata/com.android.wifi/WifiConfigStore.xml'
+  $ adb reboot   # WifiConfigStore is read at boot
   ```
 
-  Byte-for-byte equal to the patched WIFI file's MAC. That closes the loop: `BT_Addr[0:6]` propagates to `settings get secure bluetooth_address`, and `WIFI[4:10]` propagates to `wpa_supplicant`'s `p2p0` Own MAC. Both consumers got the patched bytes.
+  After reboot the device re-associates to the saved network with its permanent MAC. With the offline-flash test that wrote `02:0f:f1:1e:11:02` into `WIFI[4:10]`:
+
+  ```
+  $ adb shell su -c 'cat /sys/class/net/wlan0/address'
+  02:0f:f1:1e:11:02
+
+  $ adb shell su -c 'dumpsys wifi 2>/dev/null | grep "mWifiInfo SSID"'
+  mWifiInfo SSID: Sternheims-5G, BSSID: 32:35:0d:2c:aa:23,
+  MAC: 02:0f:f1:1e:11:02, Supplicant state: COMPLETED, …
+   macRandomizationSetting: 0
+  ```
+
+  Byte-for-byte equal to the patched WIFI file's MAC. Confirms `BT_Addr[0:6]` propagates to `settings get secure bluetooth_address` and `WIFI[4:10]` propagates to `wlan0`'s perm address (visible once Android's randomization layer is turned off for the network). Both consumers got the patched bytes. Re-enable randomization with the inverse `sed` and a reboot if the user wants the privacy layer back.
+
+  An earlier capture of `wpa_supplicant: p2p0: Own MAC address: <patched>` in logcat looked like a runtime confirmation but didn't reproduce on subsequent boots — `p2p0` is also `addr_assign_type=3` on this build, so its userspace-visible MAC is randomized too. The reliable runtime read is via `wlan0/address` with `MacRandomizationSetting=0`, as documented above; ignore the earlier p2p0 line.
 
 - **Other MT67xx devices (F25, TIQ M5, …)** — **not yet tested for WiFi/BT MAC patching.** The format constants in `mac_tool.py` (440-byte BT_Addr file, 2050-byte WIFI file, the 16-byte BT_Addr trailer fingerprint, the `01 00 08 00` WIFI header, the 2-byte `aa CC` trailer) and the `NVM_ComputeCheckNo` algorithm match against the on-device `libnvram.so` on F21 Pro only. Whether they're identical across the rest of the MT67xx product line is plausible (MTK MOLY ships a single NVRAM library across these chipsets) but unverified. Treat any other device's behavior as unknown until run end-to-end on hardware. Re-running the disassembly and validation steps above against that device's `/vendor/lib64/libnvram.so` and a known-good `BT_Addr` / `WIFI` file is the first step.

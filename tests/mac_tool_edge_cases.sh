@@ -9,6 +9,7 @@ EDGE="$ROOT/tmp/edge"
 SAMPLES="$ROOT/tmp/wifi_bt_re"
 rm -rf "$EDGE"
 mkdir -p "$EDGE"
+trap 'rm -rf "$EDGE"' EXIT INT TERM
 
 [ -f "$SAMPLES/BT_Addr.bin" ]    || { echo "missing $SAMPLES/BT_Addr.bin (pull a live BT_Addr first)";   exit 2; }
 [ -f "$SAMPLES/WIFI.bin" ]       || { echo "missing $SAMPLES/WIFI.bin (pull a live WIFI first)";        exit 2; }
@@ -76,11 +77,11 @@ echo "== Read failures =="
 assert_fail   "missing file"                  python3 "$TOOL" read /nonexistent
 : >"$EDGE/empty.bin"
 assert_fail   "empty file"                    python3 "$TOOL" read "$EDGE/empty.bin"
-printf 'XXXXXXXX' | head -c 440 > "$EDGE/junk440.bin"; perl -e 'print "X"x440' > "$EDGE/junk440.bin"
+python3 -c "open('$EDGE/junk440.bin','wb').write(b'X'*440)"
 assert_stderr "junk 440 -> sig mismatch hint" "trailer signature" python3 "$TOOL" read "$EDGE/junk440.bin"
-perl -e 'print "X"x2050' > "$EDGE/junk2050.bin"
+python3 -c "open('$EDGE/junk2050.bin','wb').write(b'X'*2050)"
 assert_stderr "junk 2050 -> hdr mismatch hint" "header magic"      python3 "$TOOL" read "$EDGE/junk2050.bin"
-perl -e 'print "X"x1234' > "$EDGE/junk1234.bin"
+python3 -c "open('$EDGE/junk1234.bin','wb').write(b'X'*1234)"
 assert_stderr "wrong size hint"               "expected 440"        python3 "$TOOL" read "$EDGE/junk1234.bin"
 
 echo "== MAC format validation =="
@@ -110,12 +111,15 @@ assert_stderr "non-existent out dir" "cannot write" python3 "$TOOL" write "$SAMP
 assert_pass   "out=/dev/null"        python3 "$TOOL" write "$SAMPLES/BT_Addr.bin" --bt 02:11:22:33:44:55 -o /dev/null
 
 echo "== Round-trip identity =="
-python3 "$TOOL" write "$SAMPLES/BT_Addr.bin" --bt 02:11:22:33:44:55     -o "$EDGE/rt_bt_a.bin" >/dev/null
-python3 "$TOOL" write "$EDGE/rt_bt_a.bin"    --bt 10:df:8b:ab:5a:52     -o "$EDGE/rt_bt_b.bin" >/dev/null
-if cmp -s "$SAMPLES/BT_Addr.bin"   "$EDGE/rt_bt_b.bin";   then echo "  PASS   BT  round-trip byte-identical";   PASS=$((PASS+1)); else echo "  FAIL   BT round-trip differs";  FAIL=$((FAIL+1)); fi
-python3 "$TOOL" write "$SAMPLES/WIFI.bin"    --wifi 02:11:22:33:44:66   -o "$EDGE/rt_wf_a.bin" >/dev/null
-python3 "$TOOL" write "$EDGE/rt_wf_a.bin"    --wifi 10:df:8b:23:9d:44   -o "$EDGE/rt_wf_b.bin" >/dev/null
-if cmp -s "$SAMPLES/WIFI.bin"      "$EDGE/rt_wf_b.bin";   then echo "  PASS   WIFI round-trip byte-identical"; PASS=$((PASS+1)); else echo "  FAIL   WIFI round-trip differs"; FAIL=$((FAIL+1)); fi
+ORIG_BT_MAC=$(python3 "$TOOL" read "$SAMPLES/BT_Addr.bin" | awk '{print $2}')
+ORIG_WF_MAC=$(python3 "$TOOL" read "$SAMPLES/WIFI.bin"    | awk '{print $3}')
+[ -n "$ORIG_BT_MAC" ] && [ -n "$ORIG_WF_MAC" ] || { echo "  FAIL   could not read original MACs from samples"; FAIL=$((FAIL+1)); }
+python3 "$TOOL" write "$SAMPLES/BT_Addr.bin" --bt   02:11:22:33:44:55 -o "$EDGE/rt_bt_a.bin" >/dev/null
+python3 "$TOOL" write "$EDGE/rt_bt_a.bin"    --bt   "$ORIG_BT_MAC"    -o "$EDGE/rt_bt_b.bin" >/dev/null
+if cmp -s "$SAMPLES/BT_Addr.bin"   "$EDGE/rt_bt_b.bin";   then echo "  PASS   BT  round-trip byte-identical (orig=$ORIG_BT_MAC)";   PASS=$((PASS+1)); else echo "  FAIL   BT round-trip differs (orig=$ORIG_BT_MAC)";  FAIL=$((FAIL+1)); fi
+python3 "$TOOL" write "$SAMPLES/WIFI.bin"    --wifi 02:11:22:33:44:66 -o "$EDGE/rt_wf_a.bin" >/dev/null
+python3 "$TOOL" write "$EDGE/rt_wf_a.bin"    --wifi "$ORIG_WF_MAC"    -o "$EDGE/rt_wf_b.bin" >/dev/null
+if cmp -s "$SAMPLES/WIFI.bin"      "$EDGE/rt_wf_b.bin";   then echo "  PASS   WIFI round-trip byte-identical (orig=$ORIG_WF_MAC)"; PASS=$((PASS+1)); else echo "  FAIL   WIFI round-trip differs (orig=$ORIG_WF_MAC)"; FAIL=$((FAIL+1)); fi
 
 echo "== Partition image edge cases =="
 python3 -c "
