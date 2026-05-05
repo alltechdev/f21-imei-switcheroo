@@ -487,7 +487,7 @@ Every step above can be independently reproduced with:
 
 ## Cross-device validation (F25)
 
-The walkthrough above was conducted on a live F21 Pro (single-SIM). The same key, slot offsets, and checksum were independently re-validated first against a stock **DuoQin F25** (dual-SIM) firmware ZIP, then live on F25 hardware via this repo's `live_patch.sh` and via the [`flipphoneguy/mtk-imei-switcheroo-app`](https://github.com/flipphoneguy/mtk-imei-switcheroo-app) Java port — patched IMEIs persist across reboot and the modem accepts the patched bytes at runtime.
+The walkthrough above was conducted on a live F21 Pro (single-SIM). The same key, slot offsets, and checksum were independently re-validated first against a stock **DuoQin F25** (dual-SIM) firmware ZIP, then live on F25 hardware via this repo's `live_patch.sh` and via the [`flipphoneguy/mtk-imei-switcheroo-app`](https://github.com/flipphoneguy/mtk-imei-switcheroo-app) Java port — patched IMEIs persist across reboot and the modem accepts the patched bytes at runtime. **F25 hardware testing is performed by the port author (also the F25 device tester); we do not have F25 hardware on this side.**
 
 For the MAC-side per-device analysis on F25 (BT_Addr / WIFI signatures, the `01 00 09 00` WIFI header variant, AllMap structure, modem family) see [`f25_offline_analysis.md`](f25_offline_analysis.md).
 
@@ -503,7 +503,7 @@ For the MAC-side per-device analysis on F25 (BT_Addr / WIFI signatures, the `01 
 
 ### Live hardware confirmation (subsequent)
 
-After the initial firmware-only analysis above, F25 hardware was tested via this repo's `live_patch.sh` and via the Java app port. Patched IMEIs persisted across reboot and the modem accepted the patched bytes at runtime. The original "no live F25 hardware" caveat has been resolved.
+After the initial firmware-only analysis above, F25 hardware was tested via this repo's `live_patch.sh` and via the Java app port. Patched IMEIs persisted across reboot and the modem accepted the patched bytes at runtime. F25 hardware testing was performed by the port author (also the F25 tester); we do not have F25 hardware here. The original "no live F25 hardware" caveat has been resolved upstream.
 
 ### What was *not* checked
 
