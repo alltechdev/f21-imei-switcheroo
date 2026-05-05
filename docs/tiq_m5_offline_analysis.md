@@ -1,8 +1,8 @@
 # TIQ M5 — offline analysis of pulled partitions
 
-An offline analysis of `mac_tool.py` / `live_patch_mac.sh` compatibility on the **TIQ M5** (MT6761, dual-SIM), reached from partition dumps before any live TIQ M5 device was connected — followed by a [Resolution](#resolution-of-the-open-question) section noting the subsequent hardware confirmation via the Java app port. Every output reproduced in this doc is a real run; nothing is illustrative.
+An offline analysis of `mac_tool.py` / `live_patch_mac.sh` compatibility on the **TIQ M5** (MT6761, dual-SIM), reached from partition dumps before any live TIQ M5 device was connected. Subsequent live-device testing produced a more nuanced picture than this doc originally claimed; see [`tiq_m5_mac_live_findings.md`](tiq_m5_mac_live_findings.md) for the live results, and the [Resolution](#resolution-of-the-open-question) section here for the live-test update to the original open question. Every output reproduced in this doc is a real run; nothing is illustrative.
 
-> **Status:** the on-disk format, the AllMap index format, the BT_Addr / WIFI signatures, and the trailer-checksum algorithm are byte-for-byte compatible with what was verified end-to-end on F21 Pro. Round-trip integrity through `mac_tool.py` is byte-clean for both standalone files and the full 64 MiB `nvdata.bin`. **Hardware patching has subsequently been confirmed on TIQ M5** by an end-user running the Java app port (`flipphoneguy/mtk-imei-switcheroo-app`) — that resolves the open question this doc originally flagged about the all-zero WIFI MAC field, see [Resolution](#resolution-of-the-open-question) at the end. The offline analysis below was performed before that hardware confirmation; the open-question section is preserved as it was written, with the resolution stated underneath.
+> **Status:** the on-disk format, the AllMap index format, the BT_Addr / WIFI signatures, and the trailer-checksum algorithm are byte-for-byte compatible with what was verified end-to-end on F21 Pro. Round-trip integrity through `mac_tool.py` is byte-clean for both standalone files and the full 64 MiB `nvdata.bin`. **Live-device confirmed on TIQ M5 (partial)**: BT MAC patching via `live_patch_mac.sh` works end-to-end (file persists, daemon validates, `settings get secure bluetooth_address` reflects the patched value across reboots); WiFi MAC patching writes a byte-perfect file the daemon accepts, but the chipset firmware on this M5 build holds the runtime WiFi MAC in an on-die cache that only the Java app port (`flipphoneguy/mtk-imei-switcheroo-app`) can update — `live_patch_mac.sh` does not, even though it uses the same algorithm and the same on-device primitives. Full live findings, ruled-out hypotheses, and reproduction steps: [`tiq_m5_mac_live_findings.md`](tiq_m5_mac_live_findings.md). The offline analysis below was performed before live testing; the open-question section is preserved as it was written, with the live-test update stated under [Resolution](#resolution-of-the-open-question).
 
 ## Source material
 
@@ -152,10 +152,10 @@ for m in re.finditer(b"/mnt/vendor/nvdata/", data):
 
 Every prefix has the same `00 00 00 00 07 00 00 00` lead bytes as F21 Pro's AllMap entries, and every `<offset, size>` pair matches the file's known size:
 
-- `BT_Addr`: `size=0x1b8` = 440 ✓
-- `WIFI_CUSTOM`: `size=0x6` = 6 ✓
-- `WIFI`: `size=0x802` = 2050 ✓
-- `LD0B_001`: `size=0x180` = 384 ✓ (the IMEI file, same size as F21 Pro)
+- `BT_Addr`: `size=0x1b8` = 440 (matches)
+- `WIFI_CUSTOM`: `size=0x6` = 6 (matches)
+- `WIFI`: `size=0x802` = 2050 (matches)
+- `LD0B_001`: `size=0x180` = 384 (matches; the IMEI file, same size as F21 Pro)
 
 So TIQ M5 nvdata uses the same AllMap-style index of records as F21 Pro. The strings `NVRAM_VER`, `FILE_VER`, `AllFile`, and `AllMap` are all also present in the partition (`grep`-confirmed), reinforcing that the same MTK NVRAM stack is in use:
 
@@ -329,15 +329,19 @@ The only way to disambiguate is to run on hardware: before any patch, `cat /sys/
 
 ## Resolution of the open question
 
-An end-user running [`flipphoneguy/mtk-imei-switcheroo-app`](https://github.com/flipphoneguy/mtk-imei-switcheroo-app) on TIQ M5 hardware reported a successful BT MAC + WiFi MAC patch — both took effect at runtime. The app's `MacCrypto.java` is bit-for-bit equivalent to `mac_tool.compute_checksum` (verified offline against the very TIQ M5 samples in this doc), and it patches the same `/mnt/vendor/nvdata/APCFG/APRDEB/{BT_Addr, WIFI}` files.
+Live-device testing on TIQ M5 hardware (full findings: [`tiq_m5_mac_live_findings.md`](tiq_m5_mac_live_findings.md)) refined the picture. Of the three reads originally flagged:
 
-That confirms **read 1**: the dump's all-zero WIFI MAC was the unprovisioned state, and the APRDEB `WIFI` file is the runtime source on TIQ M5 just as on F21 Pro. Reads 2 and 3 are excluded.
+- **Read 1** (file is the unprovisioned state, APRDEB/WIFI is the runtime source): **partially correct** — the dump's all-zero MAC was indeed the unprovisioned state, and the kernel WiFi driver does load the file's MAC into the wiphy at boot via `kalUpdateMACAddress` (visible in dmesg).
+- **Read 2** (TIQ M5 sources its WiFi MAC from somewhere other than APCFG/APRDEB/WIFI): **also partially correct** — Android's WiFi HAL queries the chipset firmware for the "factory MAC" via NL80211 vendor command, and that returns a value held in chipset on-die memory (the connsys subsystem's RAM/SRAM, not visible as any block device on the SoC side) rather than the wiphy MAC the kernel just loaded. The HAL then forces this on-die-cache value back onto `wlan0` via `wlanSetMacAddress`, overriding the wiphy MAC.
+- **Read 3** (the device runs WiFi MAC randomization unconditionally): excluded — with `MacRandomizationSetting=0` Android does **not** randomize, but it still uses the chipset's on-die-cache value rather than the wiphy MAC.
+
+So the WIFI file IS read by the kernel and IS what populates the wiphy, but the runtime MAC the AP sees is decided one layer up by Android's HAL querying the chipset firmware's separate cache. That cache is updated only by writes performed via the Java app port (`flipphoneguy/mtk-imei-switcheroo-app`); identical primitive sequences from a host shell (`live_patch_mac.sh`, or even an offline-patched `fastboot flash nvdata`) do not update it. The differentiator was not identifiable from external observation; see the live-findings doc for the full list of ruled-out hypotheses.
 
 ## Determination
 
-**For BT_Addr patching on TIQ M5**: every offline check passes. Format identical, AllMap entry identical, signature identical, trailer-checksum algorithm identical (verified against 5 separate stored trailers — 4 in nvdata.bin, 1 in nvram.bin), full-image round-trip byte-identical. Modem stack same family as F21 Pro. Hardware patching subsequently confirmed via the Java app port.
+**For BT_Addr patching on TIQ M5**: every offline check passes. Format identical, AllMap entry identical, signature identical, trailer-checksum algorithm identical (verified against 5 separate stored trailers — 4 in nvdata.bin, 1 in nvram.bin), full-image round-trip byte-identical. Modem stack same family as F21 Pro. **`live_patch_mac.sh` confirmed live end-to-end on TIQ M5 hardware** — file persists byte-identical, daemon validates, `settings get secure bluetooth_address` reflects the patched value across reboots.
 
-**For WIFI patching on TIQ M5**: the format match and round-trip are equally strong; the dump's all-zero starting MAC is the unprovisioned state, not a different storage path. Hardware patching subsequently confirmed via the Java app port. `live_patch_mac.sh` itself has not been run on TIQ M5 hardware, but the underlying algorithm is what got verified.
+**For WIFI patching on TIQ M5**: the format match and round-trip are equally strong; the dump's all-zero starting MAC is the unprovisioned state. **`live_patch_mac.sh` writes a byte-perfect WIFI file on TIQ M5 hardware** (the daemon accepts it, no rollback, every layer up to and including the kernel wiphy reflects the patched value), **but the runtime MAC the AP sees stays at whatever the app port last wrote** because the chipset firmware's on-die cache is what Android's HAL queries. For WiFi MAC changes on TIQ M5, use the app port; this repo's `live_patch_mac.sh` is BT-only at runtime on this device. F21 Pro and F25 do not exhibit this asymmetry.
 
 ## Reproducibility
 

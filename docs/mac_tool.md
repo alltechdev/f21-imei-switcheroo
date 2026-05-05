@@ -4,7 +4,7 @@ Reads and writes the WiFi MAC and Bluetooth address inside an MTK NVRAM `BT_Addr
 
 The file is short by design. The MTK NVRAM trailer-byte algorithm (the only non-trivial piece) is in `compute_checksum`; everything else is byte-shuffling and CLI plumbing. See [`wifi_bt_reverse_engineering.md`](wifi_bt_reverse_engineering.md) for the algorithm's provenance.
 
-> **Scope reminder:** verified end-to-end on hardware for **F21 Pro** (this repo's flows) and **F25** (this repo's flows + the Java app port). **TIQ M5** confirmed via the Java app port only — `mac_tool.py` itself has been validated against TIQ M5 partition samples (round-trip identity) but not run on TIQ M5 hardware directly. The format constants below match what's on F21 Pro's `/vendor/lib64/libnvram.so`; the F25 WIFI header variant (`01 00 09 00`) is supported via `WIFI_HDR_VARIANTS`.
+> **Scope reminder.** Verified on hardware for **F21 Pro** (this repo's flows), **F25** (this repo's flows + the Java app port), and **TIQ M5** (this repo's flows for BT and file-level WiFi; runtime WiFi via the app port only — see [`tiq_m5_mac_live_findings.md`](tiq_m5_mac_live_findings.md)). `mac_tool.py` itself has been exercised on TIQ M5 partition samples (round-trip identity) and on TIQ M5 hardware via `live_patch_mac.sh`. The format constants below match what's on F21 Pro's `/vendor/lib64/libnvram.so`; the F25 WIFI header variant (`01 00 09 00`) is supported via `WIFI_HDR_VARIANTS`.
 
 ## Imports
 
