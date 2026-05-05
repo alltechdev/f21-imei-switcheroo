@@ -87,7 +87,7 @@ The trailer-byte algorithm (the only non-trivial piece) was recovered by disasse
 
 **Offline-tool compatibility** verified on **F21 Pro**, **F25**, and **TIQ M5**. `mac_tool.py` recognizes BT_Addr / WIFI records on all three; the regression sweep `tests/mac_tool_edge_cases.sh` includes byte-identical full-image round-trip tests for each when the partition dumps are present in `tmp/{wifi_bt_re,tiqm5,f25}/`. F25's WIFI uses header `01 00 09 00` instead of `01 00 08 00` — `mac_tool.py`'s `WIFI_HDR_VARIANTS` accepts both. Per-device offline RE: [`docs/tiq_m5_offline_analysis.md`](docs/tiq_m5_offline_analysis.md), [`docs/f25_offline_analysis.md`](docs/f25_offline_analysis.md).
 
-**Live-device verification** confirmed on all three:
+**Live-device verification** confirmed on F21 Pro and TIQ M5 directly; F25 confirmed through the upstream Java port (we do not have F25 hardware on this side):
 
 - **F21 Pro** — exercised end-to-end via this repo's `live_patch_mac.sh` (ADB-push path) and `mac_tool.py` + `fastboot flash nvdata` (offline path). Each run wrote to a fresh test MAC, rebooted, and confirmed:
   - both `BT_Addr` and `WIFI` files survive reboot byte-identical to what was written;
